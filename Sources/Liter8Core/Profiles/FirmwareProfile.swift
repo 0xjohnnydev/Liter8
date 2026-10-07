@@ -48,6 +48,11 @@ public struct KernelResolverProfile: Equatable, Sendable {
     public let component: String
     public let embeddedFingerprint: String
     public let resolverVariants: [String: ResolverVariantProfile]
+    /// Optional patch families this kernel leaves out of the composite boot
+    /// plans, because they have not been ported to it. Naming one here is an
+    /// explicit, reviewed decision; a kernel without a profile still has to
+    /// resolve every family.
+    public let omittedResolvers: Set<String>
 
     public init(
         id: String,
@@ -56,7 +61,8 @@ public struct KernelResolverProfile: Equatable, Sendable {
         boards: [String],
         component: String,
         embeddedFingerprint: String,
-        resolverVariants: [String: ResolverVariantProfile]
+        resolverVariants: [String: ResolverVariantProfile],
+        omittedResolvers: Set<String> = []
     ) {
         self.id = id
         self.productVersion = productVersion
@@ -65,6 +71,7 @@ public struct KernelResolverProfile: Equatable, Sendable {
         self.component = component
         self.embeddedFingerprint = embeddedFingerprint
         self.resolverVariants = resolverVariants
+        self.omittedResolvers = omittedResolvers
     }
 
     /// Whether this profile covers a specific Apple build ID.

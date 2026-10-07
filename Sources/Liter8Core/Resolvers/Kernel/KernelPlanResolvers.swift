@@ -37,7 +37,7 @@ public struct KernelBootResolver: Sendable {
             sep: KernelSEPResolver().resolve(in: image),
             credentialManager: KernelCredentialManagerResolver().resolve(in: image),
             sandbox: KernelSandboxResolver().resolve(in: image),
-            valeria: KernelValeriaResolver().resolve(in: image)
+            valeria: KernelValeriaResolver.compositeRecords(in: image)
         )
     }
 }
@@ -59,7 +59,7 @@ public struct KernelBootCompatibilityResolver: Sendable {
             sep: KernelSEPResolver().resolve(in: image),
             credentialManager: KernelCredentialManagerResolver().resolve(in: image),
             sandbox: KernelSandboxCompatibilityResolver().resolve(in: image),
-            valeria: KernelValeriaResolver().resolve(in: image)
+            valeria: KernelValeriaResolver.compositeRecords(in: image)
         )
     }
 }
