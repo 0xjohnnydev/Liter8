@@ -58,7 +58,7 @@ public struct KernelBootCompatibilityResolver: Sendable {
             bootPolicy: KernelBootPolicyResolver().resolve(in: image),
             sep: KernelSEPResolver().resolve(in: image),
             credentialManager: KernelCredentialManagerResolver().resolve(in: image),
-            sandbox: KernelSandboxResolver(includeScopedVnodeOpen: false).resolve(in: image),
+            sandbox: KernelSandboxCompatibilityResolver().resolve(in: image),
             valeria: KernelValeriaResolver().resolve(in: image)
         )
     }

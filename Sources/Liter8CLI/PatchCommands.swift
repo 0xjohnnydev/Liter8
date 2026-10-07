@@ -23,8 +23,8 @@ COMPONENTS AND PLANS:
               ibec-restore, ibss-ramdisk, ibss-skip-display-init,
               ibec-ignore-pinot-failure, ibec-force-pinot-id
   kernel      restore, boot-policy, aks, sep-silence, sep,
-              credential-manager, sandbox, valeria, boot, boot-public,
-              diagnostic
+              credential-manager, sandbox, sandbox-public, valeria, boot,
+              boot-public, diagnostic
   txm         restore, boot
   userland    restored-fdr, asr, coreauthd, ctkd, mobileactivationd, commcenter
   devicetree  restore, normal

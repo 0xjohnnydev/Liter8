@@ -44,6 +44,7 @@ let resolverGroups: [String: [String: String]] = [
         "sep": KernelSEPResolver.name,
         "credential-manager": KernelCredentialManagerResolver.name,
         "sandbox": KernelSandboxResolver.name,
+        "sandbox-public": KernelSandboxCompatibilityResolver.name,
         "valeria": KernelValeriaResolver.name,
         "boot": KernelBootResolver.name,
         // Keep the public CLI spelling stable while the Swift type describes
@@ -211,6 +212,9 @@ func resolveRecords(
     case KernelSandboxResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelSandboxResolver().resolve(in: image)
+    case KernelSandboxCompatibilityResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelSandboxCompatibilityResolver().resolve(in: image)
     case KernelValeriaResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelValeriaResolver().resolve(in: image)
