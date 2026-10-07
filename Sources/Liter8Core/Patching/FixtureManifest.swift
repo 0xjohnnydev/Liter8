@@ -183,12 +183,20 @@ public struct FixtureManifest: Codable, Sendable {
             return try KernelSandboxResolver().resolve(in: image)
         case KernelSandboxCompatibilityResolver.name:
             return try KernelSandboxCompatibilityResolver().resolve(in: image)
+        case KernelPPLAllowInvalidResolver.name:
+            return try KernelPPLAllowInvalidResolver().resolve(in: image)
+        case KernelVMFaultCSBypassResolver.name:
+            return try KernelVMFaultCSBypassResolver().resolve(in: image)
+        case KernelVMMapProtectResolver.name:
+            return try KernelVMMapProtectResolver().resolve(in: image)
         case KernelValeriaResolver.name:
             return try KernelValeriaResolver().resolve(in: image)
         case KernelBootResolver.name:
             return try KernelBootResolver().resolve(in: image)
         case KernelBootCompatibilityResolver.name:
             return try KernelBootCompatibilityResolver().resolve(in: image)
+        case KernelBootJITResolver.name:
+            return try KernelBootJITResolver().resolve(in: image)
         case KernelDiagnosticResolver.name:
             return try KernelDiagnosticResolver().resolve(in: image)
         default:

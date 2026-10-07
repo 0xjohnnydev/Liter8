@@ -49,8 +49,12 @@ let resolverGroups: [String: [String: String]] = [
         "credential-manager": KernelCredentialManagerResolver.name,
         "sandbox": KernelSandboxResolver.name,
         "sandbox-public": KernelSandboxCompatibilityResolver.name,
+        "ppl-allow-invalid": KernelPPLAllowInvalidResolver.name,
+        "vm-fault-cs-bypass": KernelVMFaultCSBypassResolver.name,
+        "vm-map-protect": KernelVMMapProtectResolver.name,
         "valeria": KernelValeriaResolver.name,
         "boot": KernelBootResolver.name,
+        "boot-jit": KernelBootJITResolver.name,
         // Keep the public CLI spelling stable while the Swift type describes
         // the plan's real cross-build compatibility contract.
         "boot-public": KernelBootCompatibilityResolver.name,
@@ -222,6 +226,15 @@ func resolveRecords(
     case KernelSandboxCompatibilityResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelSandboxCompatibilityResolver().resolve(in: image)
+    case KernelPPLAllowInvalidResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelPPLAllowInvalidResolver().resolve(in: image)
+    case KernelVMFaultCSBypassResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelVMFaultCSBypassResolver().resolve(in: image)
+    case KernelVMMapProtectResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelVMMapProtectResolver().resolve(in: image)
     case KernelValeriaResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelValeriaResolver().resolve(in: image)
@@ -231,6 +244,9 @@ func resolveRecords(
     case KernelBootCompatibilityResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootCompatibilityResolver().resolve(in: image)
+    case KernelBootJITResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelBootJITResolver().resolve(in: image)
     case KernelDiagnosticResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelDiagnosticResolver().resolve(in: image)

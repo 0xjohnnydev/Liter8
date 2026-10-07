@@ -64,6 +64,25 @@ public struct KernelBootCompatibilityResolver: Sendable {
     }
 }
 
+/// Opt-in normal-boot plan that also lets running processes modify their own
+/// code pages, which runtime tweak injection (ElleKit function hooks) needs.
+///
+/// This is `boot-public` plus the code-signing-invalid patches. It is kept
+/// separate because those patches weaken the code-signing guarantee for every
+/// process, so a boot opts into them explicitly rather than getting them in the
+/// reviewed default. The extra records resolve only on a kernel profile that
+/// registers the `kernel-codesign-invalid` variant; on any other kernel the
+/// composed plan equals `boot-public`.
+public struct KernelBootJITResolver: Sendable {
+    public static let name = "kernel-boot-jit"
+    public init() {}
+
+    public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
+        try KernelBootCompatibilityResolver().resolve(in: image)
+            + KernelCodeSigningResolver.requiredRecords(in: image)
+    }
+}
+
 /// Diagnostic kernel plan: retain the anti-hang AKS changes, but deliberately
 /// omit SEP panic silencing, CredentialManager suppression, USB restore-mode
 /// forcing, persona changes, and Sandbox relaxation. If SEP still fails, this
