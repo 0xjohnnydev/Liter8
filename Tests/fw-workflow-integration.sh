@@ -113,6 +113,7 @@ assert document["bootPlan"] == {
     "normalIBSSAdditionalPlans": ["ibss-skip-display-init"],
     "restoreIBSSAdditionalPlans": ["ibss-skip-display-init"],
     "preservesIM4PCompression": False,
+    "normalBootUsesStaticTrustCache": False,
 }
 ''')
 PY

@@ -4,11 +4,13 @@
 import sys
 from pathlib import Path
 
+from boot_artifacts import has_txm
 from liter8_workflow import Context, WorkflowError, main_guard, run
 
 
 def build() -> None:
     context = Context.load()
+    patch_txm = has_txm(context.components, "restore")
     context.prepare_cfw()
 
     # iBSS is consumed as a raw payload by usbliter8ctl, rather than from CFW.
@@ -35,10 +37,11 @@ def build() -> None:
         record_name="devicetree-restore", capture_records=False,
     )
 
-    print("[*] CFW component 4/6: restore TXM", flush=True)
-    txm = context.component("Ap,RestoreTrustedExecutionMonitor", in_cfw=True)
-    context.reset_to_pristine(txm)
-    context.apply("txm", "restore", txm, record_name="txm-restore")
+    if patch_txm:
+        print("[*] CFW component 4/6: restore TXM", flush=True)
+        txm = context.component("Ap,RestoreTrustedExecutionMonitor", in_cfw=True)
+        context.reset_to_pristine(txm)
+        context.apply("txm", "restore", txm, record_name="txm-restore")
 
     print("[*] CFW component 5/6: restore kernelcache", flush=True)
     kernel = context.component("RestoreKernelCache", in_cfw=True)

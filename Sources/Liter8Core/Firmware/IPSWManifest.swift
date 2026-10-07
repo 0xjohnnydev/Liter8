@@ -129,15 +129,21 @@ public struct DeviceBootPlan: Codable, Equatable, Sendable {
     /// of uncompressed. n104 boots uncompressed images; the j171aap iBoot
     /// rejects them and only accepts restricted LZFSE (see FirmwareArtifact).
     public let preservesIM4PCompression: Bool
+    /// Send StaticTrustCache instead of RestoreTrustCache on normal boot.
+    /// n104 boots both modes with the restore cache; j171aap's normal boot
+    /// needs the System-volume cache. SSHRD always uses the restore cache.
+    public let normalBootUsesStaticTrustCache: Bool
 
     public init(
         normalIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
         restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
-        preservesIM4PCompression: Bool = false
+        preservesIM4PCompression: Bool = false,
+        normalBootUsesStaticTrustCache: Bool = false
     ) {
         self.normalIBSSAdditionalPlans = normalIBSSAdditionalPlans
         self.restoreIBSSAdditionalPlans = restoreIBSSAdditionalPlans
         self.preservesIM4PCompression = preservesIM4PCompression
+        self.normalBootUsesStaticTrustCache = normalBootUsesStaticTrustCache
     }
 }
 

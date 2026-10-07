@@ -59,6 +59,7 @@ class Context:
     normal_ibss_additional_plans: tuple[str, ...] = ()
     restore_ibss_additional_plans: tuple[str, ...] = ()
     preserve_im4p_compression: bool = False
+    normal_boot_static_trust_cache: bool = False
 
     @classmethod
     def load(cls) -> "Context":
@@ -82,6 +83,9 @@ class Context:
         preserve_compression = boot_plan.get("preservesIM4PCompression")
         if not isinstance(preserve_compression, bool):
             raise WorkflowError("Liter8 context boot plan has no IM4P compression policy")
+        static_trust_cache = boot_plan.get("normalBootUsesStaticTrustCache")
+        if not isinstance(static_trust_cache, bool):
+            raise WorkflowError("Liter8 context boot plan has no normal-boot trust cache policy")
 
         work = Path.cwd().resolve()
         source = Path(document["sourceRoot"]).resolve()
@@ -100,6 +104,7 @@ class Context:
             normal_ibss_additional_plans=normal_plans,
             restore_ibss_additional_plans=restore_plans,
             preserve_im4p_compression=preserve_compression,
+            normal_boot_static_trust_cache=static_trust_cache,
         )
 
     def component(self, name: str, *, in_cfw: bool = False) -> Path:

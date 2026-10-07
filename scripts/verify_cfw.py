@@ -4,6 +4,7 @@
 import hashlib
 from pathlib import Path
 
+from boot_artifacts import has_txm
 from liter8_workflow import Context, WorkflowError, main_guard
 
 
@@ -17,10 +18,13 @@ def verify() -> None:
         "ibss-restore": context.work / "CFW-iBSS.raw",
         "ibec-restore": context.component("iBEC", in_cfw=True),
         "devicetree-restore": context.component("RestoreDeviceTree", in_cfw=True),
-        "txm-restore": context.component("Ap,RestoreTrustedExecutionMonitor", in_cfw=True),
         "kernel-restore": context.component("RestoreKernelCache", in_cfw=True),
         "restore-ramdisk": context.component("RestoreRamDisk", in_cfw=True),
     }
+    if has_txm(context.components, "restore"):
+        targets["txm-restore"] = context.component(
+            "Ap,RestoreTrustedExecutionMonitor", in_cfw=True
+        )
 
     failures: list[str] = []
     for name, artifact in targets.items():

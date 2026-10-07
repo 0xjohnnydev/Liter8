@@ -11,6 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from boot_artifacts import has_txm, selected_passthrough
 from liter8_workflow import Context, WorkflowError, main_guard, run
 
 
@@ -27,10 +28,32 @@ FIRMWARE_SEQUENCE = [
     ("GFX.img4", "firmware", 0),
     ("ISP.img4", "firmware", 1),
     ("PMP.img4", "firmware", 0),
+    ("StaticTrustCache.img4", "firmware", 0),
     ("RestoreTrustCache.img4", "firmware", 0),
     ("SIO.img4", "firmware", 0),
     ("WCH.img4", "firmware", 0),
 ]
+
+
+def selected_firmware_sequence(
+    components: dict[str, str], mode: str, *, static_trust_cache: bool = False
+) -> list[tuple[str, str, int]]:
+    """Keep the established upload order, omitting firmware absent on this board."""
+    available = {
+        name for _, name, _ in
+        selected_passthrough(components, mode, static_trust_cache=static_trust_cache)
+    }
+    if has_txm(components, mode):
+        available.add("TXM.img4")
+    # SEP is uploaded separately after DeviceTree.
+    return [entry for entry in FIRMWARE_SEQUENCE if entry[0] in available]
+
+
+def firmware_sequence(context: Context, mode: str) -> list[tuple[str, str, int]]:
+    return selected_firmware_sequence(
+        context.components, mode,
+        static_trust_cache=context.normal_boot_static_trust_cache,
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -76,7 +99,7 @@ def validate_boot_set(context: Context, expected_mode: str) -> Path:
         )
 
     required = ["iBSS.raw", "iBEC.img4", "DeviceTree.img4", "SEP.img4", "Kernelcache.img4"]
-    required += [name for name, _, _ in FIRMWARE_SEQUENCE]
+    required += [name for name, _, _ in firmware_sequence(context, expected_mode)]
     if expected_mode == "restore":
         required.append("RestoreRamdisk.img4")
     records = document.get("artifacts", {})
@@ -135,7 +158,7 @@ def boot() -> None:
 
     print("[*] stage 3: display and firmware", flush=True)
     run([irecovery, "-c", "bgcolor 0 191 255"])
-    for name, command, pause_after in FIRMWARE_SEQUENCE:
+    for name, command, pause_after in firmware_sequence(context, mode):
         send(irecovery, root, name, command)
         if pause_after:
             time.sleep(pause_after)

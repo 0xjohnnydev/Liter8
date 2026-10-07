@@ -23,11 +23,17 @@ sys.path.insert(0, str(SCRIPTS))
 from liter8_workflow import Context, WorkflowError, run  # noqa: E402
 import measure_guards  # noqa: E402
 from boot_artifacts import (  # noqa: E402
+    PASSTHROUGH_IMG4,
+    has_txm,
     publish_directory,
     ticket_from_environment,
     write_boot_manifest,
 )
-from device_boot import FIRMWARE_SEQUENCE, boot as boot_device, validate_boot_set  # noqa: E402
+from device_boot import (  # noqa: E402
+    boot as boot_device,
+    selected_firmware_sequence,
+    validate_boot_set,
+)
 from device_provision import (  # noqa: E402
     BOOTSTRAP_SHA256,
     SSHRD_PAYLOAD_SHA256,
@@ -259,6 +265,7 @@ class ContextTests(unittest.TestCase):
                 "normalIBSSAdditionalPlans": ["ibss-skip-display-init"],
                 "restoreIBSSAdditionalPlans": ["ibss-skip-display-init"],
                 "preservesIM4PCompression": False,
+                "normalBootUsesStaticTrustCache": False,
             },
         }))
         self.environment = {
@@ -1111,6 +1118,48 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(manifest["kernelPlan"], "boot-public")
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
+    def test_boot_sequence_uses_only_firmware_in_the_identity(self):
+        # The j171aap 23H30 erase identity has no SPTM/TXM, PMP or WCH.
+        components = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+        fixture_context = self.make_boot_set("restore", components=components)
+        self.assertEqual(
+            [name for name, _, _ in selected_firmware_sequence(components, "restore")],
+            ["RestoreLogo.img4", "ANE.img4", "AOP.img4", "AVE.img4",
+             "GFX.img4", "ISP.img4", "RestoreTrustCache.img4", "SIO.img4"],
+        )
+        self.assertEqual(validate_boot_set(fixture_context, "restore"), self.work / "Ramdisk")
+        self.assertFalse(has_txm(components, "restore"))
+
+    def test_static_trust_cache_is_profile_selected_for_normal_boot_only(self):
+        components = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "StaticTrustCache", "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+
+        def names(mode, static):
+            return [name for name, _, _ in
+                    selected_firmware_sequence(components, mode, static_trust_cache=static)]
+
+        self.assertIn("StaticTrustCache.img4", names("normal", True))
+        self.assertNotIn("RestoreTrustCache.img4", names("normal", True))
+        for mode, static in (("normal", False), ("restore", True), ("restore", False)):
+            self.assertIn("RestoreTrustCache.img4", names(mode, static))
+            self.assertNotIn("StaticTrustCache.img4", names(mode, static))
+
+    def test_rejects_partial_sptm_txm_boot_chain(self):
+        components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        del components["Ap,SecurePageTableMonitor"]
+        components["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        with self.assertRaisesRegex(WorkflowError, "incomplete restore SPTM/TXM pair"):
+            selected_firmware_sequence(components, "restore")
+
     def test_restore_boot_sequence_sends_ramdisk_before_devicetree(self):
         fixture_context = self.make_boot_set("restore")
         with (
@@ -1135,12 +1184,19 @@ class ContextTests(unittest.TestCase):
             ["/custom/irecovery", "-c", "bootx"],
         )
 
-    def make_boot_set(self, mode, *, kernel_plan=None):
+    def make_boot_set(self, mode, *, kernel_plan=None, components=None):
         staging = self.work / "boot-staging"
         staging.mkdir()
+        if components is None:
+            # The iPhone 11 identity: every passthrough image plus TXM.
+            components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+            components[
+                "Ap,TrustedExecutionMonitor" if mode == "normal"
+                else "Ap,RestoreTrustedExecutionMonitor"
+            ] = "txm.im4p"
         names = {
             "iBSS.raw", "iBEC.img4", "DeviceTree.img4", "SEP.img4", "Kernelcache.img4",
-            *(name for name, _, _ in FIRMWARE_SEQUENCE),
+            *(name for name, _, _ in selected_firmware_sequence(components, mode)),
         }
         if mode == "restore":
             names.add("RestoreRamdisk.img4")
@@ -1152,6 +1208,8 @@ class ContextTests(unittest.TestCase):
         fixture_context = type("FixtureContext", (), {
             "profile_id": "fixture-profile",
             "work": self.work,
+            "components": components,
+            "normal_boot_static_trust_cache": False,
         })()
         write_boot_manifest(fixture_context, staging, mode, kernel_plan=kernel_plan)
         publish_directory(staging, self.work / "Ramdisk")
