@@ -14,9 +14,11 @@ import Foundation
 /// applier refuses a kernel whose bytes differ. A kernel that does not match
 /// produces no candidate rather than a wrong patch.
 ///
-/// These are deliberately NOT part of `boot-public`. They widen the attack
-/// surface of every process, so they belong in the opt-in `boot-jit` plan and
-/// are selected per boot, not baked into the reviewed default.
+/// These are deliberately NOT part of `boot-public`. They weaken code signing
+/// for every process, so they live in the separate `boot-jit` plan. A profile
+/// makes `boot-jit` its normal-boot default with
+/// `DeviceBootPlan.normalBootRelaxesCodeSigning` (the iPad 8 research profile
+/// does); `fw get-boot --tweaks` / `--no-tweaks` override it per build.
 public enum KernelCodeSigningResolver {
     /// Opt-in variant key a kernel profile sets to request these patches.
     static let variantKey = "kernel-codesign-invalid"
@@ -157,18 +159,26 @@ public struct KernelPPLAllowInvalidResolver: Sendable {
     }
 }
 
-// MARK: - XNU: do not flag a modified page in vm_fault_enter
+// MARK: - XNU: take the cs_bypass branch in vm_fault_enter
 
-/// `vm_fault_enter` decides whether a page fault on an executable page whose
-/// code signature no longer validates is a violation. The tested bit (bit 3 of
-/// the page flags) gates the branch that records the violation. Neutralising
-/// that test lets a page that a tweak has rewritten fault back in without the
-/// process being killed.
+/// `vm_fault_enter` validates an executable page unless the fault carries
+/// `cs_bypass`:
 ///
-/// Ported from KPF's `vm_fault_enter` family. The anchor is the preceding
-/// `tbz w{16-31}, #2` / `tbz w{16-31}, #0x13|0x14` pair that uniquely locates
-/// the function; the single `tb(n)z w*, #3` immediately after it is the test
-/// that is turned into a fall-through.
+///     if (cs_bypass) {
+///         cs_violation = FALSE;      // tbz wF, #3, else ; mov wV, #0 ; ...
+///     } else if (m->vmp_cs_tainted) {
+///         ...                        // a rewritten page ends up here
+///     }
+///
+/// Removing the `tbz wF, #3` makes every fault take the bypass block, so a
+/// page that a tweak has rewritten is not treated as a violation.
+///
+/// This is KPF's `vm_fault_enter_callback14` (iOS 14 and later): the candidate
+/// is `tbz w*, #3` followed by `mov w*, #0` (optionally with a `mov xD, x23`,
+/// xD >= 16, between them), and the nearest preceding `tbz w16-31, #2`
+/// within 0x20 instructions must branch to the candidate or at most two
+/// instructions before it. KPF takes the first such site; Liter8 requires
+/// exactly one across the kernel.
 public struct KernelVMFaultCSBypassResolver: Sendable {
     public static let name = "kernel-vm-fault-cs-bypass"
     public init() {}
@@ -177,169 +187,218 @@ public struct KernelVMFaultCSBypassResolver: Sendable {
         try KernelCodeSigningResolver.requireOptIn(Self.name, in: image)
         let layout = try MachOLayout(image: image)
 
-        // Anchor: TBNZ Wn,#0x13 ; (optional CBZ) ; TBNZ Wn,#0x12  — the two
-        // bit tests KPF uses to recognise the vm_fault_enter cs path on modern
-        // XNU. We then locate the nearby TBZ Wn,#3 (the cs-violation test).
-        var anchors: [UInt64] = []
+        var candidates: [UInt64] = []
         for range in layout.executableFileRanges {
             var offset = (range.lowerBound + 3) & ~UInt64(3)
-            while offset + 12 <= range.upperBound {
-                let a = try image.readUInt32(at: offset)
-                let b = try image.readUInt32(at: offset + 4)
-                // TBNZ Wn,#0x13 then TBNZ Wn,#0x12 within one or two slots.
-                if Self.isTBNZ(a, bit: 0x13) {
-                    if Self.isTBNZ(b, bit: 0x12) {
-                        anchors.append(offset)
-                    } else if offset + 12 <= range.upperBound,
-                              Self.isTBNZ(try image.readUInt32(at: offset + 8), bit: 0x12) {
-                        anchors.append(offset)
-                    }
+            while offset + 8 <= range.upperBound {
+                if try Self.isCandidate(at: offset, in: image, range: range) {
+                    candidates.append(offset)
                 }
                 offset += 4
             }
         }
-        guard anchors.count == 1, let anchor = anchors.first else {
-            if anchors.isEmpty { throw PatchfinderError.noCandidate("vm_fault_enter cs path") }
-            throw PatchfinderError.ambiguousCandidate("vm_fault_enter cs path", offsets: anchors)
+        guard candidates.count == 1, let site = candidates.first else {
+            if candidates.isEmpty {
+                throw PatchfinderError.noCandidate("vm_fault_enter cs_bypass test")
+            }
+            throw PatchfinderError.ambiguousCandidate("vm_fault_enter cs_bypass test", offsets: candidates)
         }
-
-        // The cs-violation test is a TBZ Wn,#3 a short distance after the
-        // anchor. Scan forward a bounded window for the first one.
-        var testOffset: UInt64?
-        var cursor = anchor
-        let end = min(anchor + 0x40, UInt64(image.count) - 4)
-        while cursor <= end {
-            if Self.isTBZ(try image.readUInt32(at: cursor), bit: 3) { testOffset = cursor; break }
-            cursor += 4
-        }
-        guard let testOffset else {
-            throw PatchfinderError.noCandidate("vm_fault_enter cs-violation TBZ #3")
-        }
-        let original = try image.readUInt32(at: testOffset)
         return [PatchRecord(
-            id: "kernel.codesign.vm-fault-cs-violation",
+            id: "kernel.codesign.vm-fault-cs-bypass",
             component: "kernelcache",
-            offset: testOffset,
-            original: original,
+            offset: site,
+            original: try image.readUInt32(at: site),
             replacement: ARM64.nop,
-            summary: "Do not flag a rewritten executable page as a code-signing violation",
+            summary: "Always take the cs_bypass branch in vm_fault_enter",
             evidence: [
-                "unique vm_fault_enter cs path anchored by the TBNZ #0x13/#0x12 pair",
-                "the single TBZ Wn,#3 within 0x40 bytes is the cs-violation test",
-                "only that test becomes a fall-through; the rest of the fault path is intact",
+                "tbz w*, #3 followed by mov w*, #0 (cs_violation = FALSE)",
+                "nearest preceding tbz w16-31, #2 branches to it",
+                "unique match in executable kernel segments",
             ]
         )]
     }
 
-    private static func isTBNZ(_ word: UInt32, bit: UInt32) -> Bool {
-        // TBNZ (b5=0 for #<32): 0x37000000 base, bit number in [23:19].
-        word & 0xFFF8_0000 == (0x3700_0000 | (bit << 19))
-    }
-    private static func isTBZ(_ word: UInt32, bit: UInt32) -> Bool {
-        word & 0xFFF8_0000 == (0x3600_0000 | (bit << 19))
+    private static func isCandidate(at offset: UInt64, in image: BinaryImage,
+                                    range: Range<UInt64>) throws -> Bool {
+        // tbz w*, #3, <label>
+        guard try image.readUInt32(at: offset) & 0xFFF8_0000 == 0x3618_0000 else { return false }
+        // mov w*, #0, directly or after one mov xD, x23 (xD >= 16), as KPF masks it
+        let next = try image.readUInt32(at: offset + 4)
+        var followedByZero = next & 0xFFFF_FFE0 == 0x5280_0000
+        if !followedByZero, next & 0xFFFF_FE10 == 0xAA17_0210, offset + 12 <= range.upperBound {
+            followedByZero = try image.readUInt32(at: offset + 8) & 0xFFFF_FFE0 == 0x5280_0000
+        }
+        guard followedByZero else { return false }
+
+        // Nearest preceding tbz w16-31, #2 within 0x20 instructions.
+        var back: UInt64 = 1
+        while back <= 0x20, offset >= range.lowerBound + back * 4 {
+            let at = offset - back * 4
+            let word = try image.readUInt32(at: at)
+            if word & 0xFFF8_0010 == 0x3610_0010 {
+                guard let target = ARM64.testBranchTarget(instruction: word, at: at) else { return false }
+                return target <= offset && offset - target <= 8
+            }
+            back += 1
+        }
+        return false
     }
 }
 
 // MARK: - XNU: allow RW->RX reprotect and ignore map_disallow_new_exec
 
-/// `vm_map_protect` refuses to add `VM_PROT_EXECUTE` to a writable mapping and
-/// honours `map_disallow_new_exec`. A runtime hook that makes a code page
-/// writable, edits it and restores execute permission needs both relaxed.
+/// `vm_map_protect` drops `VM_PROT_EXECUTE` from a request that also asks for
+/// write, and refuses new execute permission on a map with
+/// `map_disallow_new_exec`. A runtime hook that makes a code page writable,
+/// edits it and restores execute needs both decisions relaxed.
 ///
-/// Ported from KPF's `vm_map_protect` family. Several encodings exist across
-/// XNU versions; the recent Darwin-25 forms are matched here. The transform is
-/// KPF's: force the preflight reject branch to fall through, then neutralise
-/// the `tb(n)z w*, #9` that applies the execute downgrade.
+/// Ported from KPF's `vm_map_protect` family. Two Darwin 25 encodings of the
+/// same preflight gate are accepted, and exactly one site must match across
+/// both:
+///
+///   XNU 25.5 (KPF matches_255)          iOS 26.4 (KPF matches_264)
+///     and  wF, wE, #0x400000              ldr  x?, [x?, #0x10]
+///     mov  wM, #6                         mov  wM, #6
+///     bic  wM, wM, wP                     bic  wM, wM, wP
+///     cmp  wM, #0                         and  wF, wE, #0x400000
+///     ccmp wF, #0, #0, eq                 cmp  wM, #0
+///     b.ne skip                           ccmp wF, #0, #0, eq
+///                                         b.ne skip
+///
+/// In both, the `b.ne` becomes an unconditional branch to its own target. The
+/// follow-up differs, exactly as in KPF:
+///   - 25.5: at the target, the `tbnz w0-15, #7` (map_disallow_new_exec)
+///     within the next three instructions becomes a NOP.
+///   - 26.4: at the target, the `tb(n)z w0-15, #9` within the next eight
+///     instructions is neutralised: a `tbnz` becomes a NOP, a `tbz` becomes an
+///     unconditional branch to its own target.
 public struct KernelVMMapProtectResolver: Sendable {
     public static let name = "kernel-vm-map-protect"
     public init() {}
+
+    private enum Shape { case darwin255, darwin264 }
+
+    private static let gate255 = MaskedInstructionPattern(name: "vm_map_protect 25.5 gate", values: [
+        0x120a_0000, 0x5280_00c0, 0x0a20_0000, 0x7100_001f, 0x7a40_0800, 0x5400_0001,
+    ], masks: [
+        0xffff_fc00, 0xffff_ffe0, 0xffe0_fc00, 0xffff_fc1f, 0xffff_fe1f, 0xff00_001f,
+    ])
+
+    private static let gate264 = MaskedInstructionPattern(name: "vm_map_protect 26.4 gate", values: [
+        0xf940_0800, 0x5280_00c0, 0x0a20_0000, 0x120a_0000, 0x7100_001f, 0x7a40_0800, 0x5400_0001,
+    ], masks: [
+        0xffff_fc00, 0xffff_ffe0, 0xffe0_fc00, 0xffff_fc00, 0xffff_fc1f, 0xffff_fe1f, 0xff00_001f,
+    ])
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
         try KernelCodeSigningResolver.requireOptIn(Self.name, in: image)
         let layout = try MachOLayout(image: image)
 
-        // Match the XNU 25.5 arm64e preflight gate (KPF matches_255):
-        //   and  wF, wEntryFlags, #0x400000
-        //   mov  wM, #6
-        //   bic  wM, wM, wProt
-        //   cmp  wM, #0
-        //   ccmp wF, #0, #0, eq
-        //   b.ne skip_downgrade
-        // Masks keep the opcode and fixed operands, relaxing the register and
-        // immediate fields KPF relaxes in masks_255.
-        let gate = MaskedInstructionPattern(name: "vm_map_protect 25.5 gate", values: [
-            0x120a_0000, 0x5280_00c0, 0x0a20_0000, 0x7100_001f, 0x7a40_0800, 0x5400_0001,
-        ], masks: [
-            0xffff_fc00, 0xffff_ffe0, 0xffe0_fc00, 0xffff_fc1f, 0xffff_fe1f, 0xff00_001f,
-        ])
-
-        var hits: [UInt64] = []
-        let byteCount = UInt64(gate.values.count * 4)
-        for range in layout.executableFileRanges
-            where range.upperBound - range.lowerBound >= byteCount {
+        var hits: [(offset: UInt64, shape: Shape)] = []
+        for range in layout.executableFileRanges {
             var offset = (range.lowerBound + 3) & ~UInt64(3)
-            while offset + byteCount <= range.upperBound {
-                if try gate.matches(in: image, at: offset) { hits.append(offset) }
+            while offset + 24 <= range.upperBound {
+                if try Self.gate255.matches(in: image, at: offset) {
+                    hits.append((offset, .darwin255))
+                } else if offset + 28 <= range.upperBound,
+                          try Self.gate264.matches(in: image, at: offset) {
+                    hits.append((offset, .darwin264))
+                }
                 offset += 4
             }
         }
-        guard hits.count == 1, let entry = hits.first else {
-            if hits.isEmpty { throw PatchfinderError.noCandidate("vm_map_protect 25.5 gate") }
-            throw PatchfinderError.ambiguousCandidate("vm_map_protect 25.5 gate", offsets: hits)
+        guard hits.count == 1, let hit = hits.first else {
+            if hits.isEmpty { throw PatchfinderError.noCandidate("vm_map_protect execute-downgrade gate") }
+            throw PatchfinderError.ambiguousCandidate(
+                "vm_map_protect execute-downgrade gate", offsets: hits.map(\.offset)
+            )
         }
 
-        // opcode_stream[5] is the b.ne to skip_downgrade; make it unconditional.
-        let branchOffset = entry + 5 * 4
+        let branchOffset = hit.offset + (hit.shape == .darwin255 ? 5 : 6) * 4
         let branch = try image.readUInt32(at: branchOffset)
-        guard let skipTarget = ARM64.conditionalTarget(instruction: branch, at: branchOffset) else {
+        guard let skipTarget = ARM64.conditionalTarget(instruction: branch, at: branchOffset),
+              let unconditional = try Self.encodeBranch(from: branchOffset, to: skipTarget, layout: layout)
+        else {
             throw PatchfinderError.noCandidate("vm_map_protect skip branch")
         }
-        guard let branchVA = layout.virtualAddress(forFileOffset: branchOffset),
-              let targetVA = layout.virtualAddress(forFileOffset: skipTarget),
-              let uncond = ARM64.encodeDirectBranch(link: false, instructionOffset: branchVA, target: targetVA) else {
-            throw PatchfinderError.noCandidate("vm_map_protect skip branch encoding")
-        }
+        var records = [PatchRecord(
+            id: "kernel.codesign.vm-map-protect.keep-execute",
+            component: "kernelcache",
+            offset: branchOffset,
+            original: branch,
+            replacement: unconditional,
+            summary: "Always skip vm_map_protect's execute downgrade",
+            evidence: [
+                hit.shape == .darwin255
+                    ? "XNU 25.5 arm64e preflight gate (KPF matches_255)"
+                    : "iOS 26.4 preflight gate (KPF matches_264)",
+                "unique match across both Darwin 25 encodings",
+                "branch forced to its existing target, not a fabricated one",
+            ]
+        )]
 
-        // At the skip target, the map_disallow_new_exec decision is a
-        // TBNZ Wn,#7 (KPF: 0x37380000 / mask 0xfff80010) within 3 slots.
-        var disallowOffset: UInt64?
-        var cursor = skipTarget
-        let end = min(skipTarget + 0x0c, UInt64(image.count) - 4)
-        while cursor <= end {
-            if try image.readUInt32(at: cursor) & 0xfff8_0010 == 0x3738_0000 {
-                disallowOffset = cursor; break
+        switch hit.shape {
+        case .darwin255:
+            // tbnz w0-15, #7 within the next three instructions.
+            guard let site = try Self.firstWord(from: skipTarget, count: 3, in: image, where: {
+                $0 & 0xfff8_0010 == 0x3738_0000
+            }) else {
+                throw PatchfinderError.noCandidate("map_disallow_new_exec decision")
             }
-            cursor += 4
-        }
-        guard let disallowOffset else {
-            throw PatchfinderError.noCandidate("map_disallow_new_exec decision")
-        }
-        let disallow = try image.readUInt32(at: disallowOffset)
-        let evidence = [
-            "XNU 25.5 arm64e vm_map_protect execute-downgrade preflight gate",
-            "unique match in executable kernel segments",
-            "reject branch forced to its existing skip target, not a fabricated one",
-            "map_disallow_new_exec TBNZ #7 within 0x0c bytes neutralised",
-        ]
-        return [
-            PatchRecord(
-                id: "kernel.codesign.vm-map-protect.allow-rx",
-                component: "kernelcache",
-                offset: branchOffset,
-                original: branch,
-                replacement: uncond,
-                summary: "Allow vm_map_protect to keep execute on a writable mapping",
-                evidence: evidence
-            ),
-            PatchRecord(
+            records.append(PatchRecord(
                 id: "kernel.codesign.vm-map-protect.disallow-new-exec",
                 component: "kernelcache",
-                offset: disallowOffset,
-                original: disallow,
+                offset: site,
+                original: try image.readUInt32(at: site),
                 replacement: ARM64.nop,
                 summary: "Ignore map_disallow_new_exec in vm_map_protect",
-                evidence: evidence
-            ),
-        ]
+                evidence: ["tbnz #7 within three instructions of the skip target"]
+            ))
+        case .darwin264:
+            // tb(n)z w0-15, #9 within the next eight instructions.
+            guard let site = try Self.firstWord(from: skipTarget, count: 8, in: image, where: {
+                $0 & 0xfef8_0010 == 0x3648_0000
+            }) else {
+                throw PatchfinderError.noCandidate("vm_map_protect bit-9 test")
+            }
+            let word = try image.readUInt32(at: site)
+            let replacement: UInt32
+            if word & 0x0100_0000 != 0 {
+                replacement = ARM64.nop                      // tbnz: never take it
+            } else {
+                guard let target = ARM64.testBranchTarget(instruction: word, at: site),
+                      let always = try Self.encodeBranch(from: site, to: target, layout: layout) else {
+                    throw PatchfinderError.noCandidate("vm_map_protect bit-9 branch")
+                }
+                replacement = always                         // tbz: always take it
+            }
+            records.append(PatchRecord(
+                id: "kernel.codesign.vm-map-protect.bit9",
+                component: "kernelcache",
+                offset: site,
+                original: word,
+                replacement: replacement,
+                summary: "Neutralise vm_map_protect's bit-9 execute test",
+                evidence: ["tb(n)z #9 within eight instructions of the skip target"]
+            ))
+        }
+        return records
+    }
+
+    private static func firstWord(from start: UInt64, count: Int, in image: BinaryImage,
+                                  where matches: (UInt32) -> Bool) throws -> UInt64? {
+        for index in 0..<count {
+            let at = start + UInt64(index * 4)
+            guard at + 4 <= UInt64(image.count) else { return nil }
+            if matches(try image.readUInt32(at: at)) { return at }
+        }
+        return nil
+    }
+
+    private static func encodeBranch(from source: UInt64, to target: UInt64,
+                                     layout: MachOLayout) throws -> UInt32? {
+        guard let sourceVA = layout.virtualAddress(forFileOffset: source),
+              let targetVA = layout.virtualAddress(forFileOffset: target) else { return nil }
+        return ARM64.encodeDirectBranch(link: false, instructionOffset: sourceVA, target: targetVA)
     }
 }

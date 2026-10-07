@@ -93,27 +93,48 @@ final class KernelCodeSigningResolverTests: XCTestCase {
 
     // MARK: - vm_fault_enter
 
-    func testVMFaultNeutralisesTheViolationTest() throws {
-        // TBNZ W8,#0x13 ; TBNZ W8,#0x12 ; ... ; TBZ W9,#3
-        let anchorA: UInt32 = 0x3700_0000 | (0x13 << 19) | 8  // tbnz w8, #0x13
-        let anchorB: UInt32 = 0x3700_0000 | (0x12 << 19) | 8  // tbnz w8, #0x12
-        let tbz3: UInt32 = 0x3600_0000 | (3 << 19) | 9        // tbz w9, #3
-        let words = nop(2) + [anchorA, anchorB] + nop(3) + [tbz3] + nop(2)
+    // tbz w17, #2, +4  -> lands on the candidate four slots later
+    private let tbz2To4: UInt32 = 0x3610_0091
+    // tbz w9, #3, +8   -> the cs_bypass test
+    private let tbz3: UInt32 = 0x3618_0109
+    // mov w10, #0      -> cs_violation = FALSE
+    private let movW10Zero: UInt32 = 0x5280_000A
+
+    func testVMFaultRemovesTheCSBypassTest() throws {
+        // index 2: tbz #2 -> index 6 ; index 6: tbz #3 ; index 7: mov #0
+        let words = nop(2) + [tbz2To4] + nop(3) + [tbz3, movW10Zero] + nop(2)
         let image = image(words: words)
         let records = try KernelVMFaultCSBypassResolver().resolve(in: image)
         XCTAssertEqual(records.count, 1)
-        XCTAssertEqual(records[0].offset, 0x4000 + UInt64((2 + 2 + 3) * 4))
-        XCTAssertEqual(records[0].replacementBytes.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) }, 0xD503_201F)
+        XCTAssertEqual(records[0].offset, 0x4000 + UInt64(6 * 4))
+        XCTAssertEqual(records[0].replacementWord, 0xD503_201F)
         _ = try GuardedPatchApplier.apply(records, to: image)
     }
 
-    func testVMFaultRejectsTwoAnchors() throws {
-        let anchorA: UInt32 = 0x3700_0000 | (0x13 << 19) | 8
-        let anchorB: UInt32 = 0x3700_0000 | (0x12 << 19) | 8
-        let tbz3: UInt32 = 0x3600_0000 | (3 << 19) | 9
-        let block = [anchorA, anchorB] + nop(2) + [tbz3]
-        let image = image(words: block + nop(4) + block)
-        XCTAssertThrowsError(try KernelVMFaultCSBypassResolver().resolve(in: image))
+    func testVMFaultAcceptsTheMovRegisterForm() throws {
+        // KPF's mask fixes the source register: mov xD, x23 with xD >= 16.
+        let movX17X23: UInt32 = 0xAA17_03F1 // mov x17, x23
+        let words = nop(2) + [tbz2To4] + nop(3) + [tbz3, movX17X23, movW10Zero] + nop(2)
+        XCTAssertEqual(try KernelVMFaultCSBypassResolver().resolve(in: image(words: words)).count, 1)
+    }
+
+    func testVMFaultRequiresTheBit2BranchToLandOnTheTest() throws {
+        // tbz #2 lands three slots before the candidate: outside KPF's window.
+        let tbz2To1: UInt32 = 0x3610_0031 // tbz w17, #2, +1
+        let words = nop(2) + [tbz2To1] + nop(3) + [tbz3, movW10Zero] + nop(2)
+        XCTAssertThrowsError(try KernelVMFaultCSBypassResolver().resolve(in: image(words: words)))
+    }
+
+    func testVMFaultRejectsALoneBypassShape() throws {
+        let words = nop(4) + [tbz3, movW10Zero] + nop(2)
+        XCTAssertThrowsError(try KernelVMFaultCSBypassResolver().resolve(in: image(words: words)))
+    }
+
+    func testVMFaultRejectsTwoSites() throws {
+        let block = [tbz2To4] + nop(3) + [tbz3, movW10Zero]
+        XCTAssertThrowsError(
+            try KernelVMFaultCSBypassResolver().resolve(in: image(words: block + nop(4) + block))
+        )
     }
 
     // MARK: - vm_map_protect
@@ -140,6 +161,26 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         XCTAssertEqual(newBranch & 0xFC00_0000, 0x1400_0000) // unconditional B
         // Second record nops the disallow TBNZ.
         XCTAssertEqual(records[1].replacementBytes.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) }, 0xD503_201F)
+        _ = try GuardedPatchApplier.apply(records, to: image)
+    }
+
+    func testVMMapProtectHandlesTheDarwin264Shape() throws {
+        // ldr x22,[x1,#0x10] ; mov w9,#6 ; bic w9,w9,w20 ; and w8,w8,#0x400000 ;
+        // cmp w9,#0 ; ccmp w8,#0,#0,eq ; b.ne +2 ; nop ; (target) nop ; tbz w8,#9,+3
+        let gate: [UInt32] = [
+            0xF940_0836, 0x5280_00C9, 0x0A34_0129, 0x120A_0108,
+            0x7100_013F, 0x7A40_0900, 0x5400_0041,
+        ]
+        let tbz9: UInt32 = 0x3648_0068
+        let words = nop(2) + gate + nop(1) + [0xD503_201F, tbz9] + nop(4)
+        let image = image(words: words)
+        let records = try KernelVMMapProtectResolver().resolve(in: image)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[0].offset, 0x4000 + UInt64((2 + 6) * 4))
+        XCTAssertEqual((records[0].replacementWord ?? 0) & 0xFC00_0000, 0x1400_0000)
+        // tbz #9 becomes an unconditional branch to its own target.
+        XCTAssertEqual(records[1].offset, 0x4000 + UInt64((2 + 7 + 1 + 1) * 4))
+        XCTAssertEqual((records[1].replacementWord ?? 0) & 0xFC00_0000, 0x1400_0000)
         _ = try GuardedPatchApplier.apply(records, to: image)
     }
 
