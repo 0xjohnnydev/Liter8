@@ -167,6 +167,8 @@ public struct FixtureManifest: Codable, Sendable {
             return try IBECPinotIgnoreFailureResolver().resolve(in: image)
         case KernelRestoreResolver.name:
             return try KernelRestoreResolver().resolve(in: image)
+        case KernelPPLTrustCacheResolver.name:
+            return try KernelPPLTrustCacheResolver().resolve(in: image)
         case KernelBootPolicyResolver.name:
             return try KernelBootPolicyResolver().resolve(in: image)
         case KernelAKSResolver.name:

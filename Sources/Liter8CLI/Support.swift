@@ -41,6 +41,7 @@ let resolverGroups: [String: [String: String]] = [
     ],
     "kernel": [
         "restore": KernelRestoreResolver.name,
+        "ppl-trust-cache": KernelPPLTrustCacheResolver.name,
         "boot-policy": KernelBootPolicyResolver.name,
         "aks": KernelAKSResolver.name,
         "sep-silence": KernelSEPSilenceResolver.name,
@@ -197,6 +198,9 @@ func resolveRecords(
     case KernelRestoreResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelRestoreResolver().resolve(in: image)
+    case KernelPPLTrustCacheResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelPPLTrustCacheResolver().resolve(in: image)
     case KernelBootPolicyResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootPolicyResolver().resolve(in: image)
