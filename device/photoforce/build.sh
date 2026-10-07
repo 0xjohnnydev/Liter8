@@ -9,11 +9,15 @@ cd "$(dirname "$0")"
 # See https://github.com/Xplo8E/Liter8/issues/2.
 LDID=../../tools/ldid_macosx_arm64
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" || LDID=$(command -v ldid || true)
+# Command Line Tools have no iPhoneOS SDK. Point LITER8_IOS_SDK at an
+# unpacked one (for example Theos's) to build without Xcode.
+SDK="${LITER8_IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
+[ -d "$SDK" ] || { echo "[!] iOS SDK missing: $SDK" >&2; exit 1; }
 
-xcrun -sdk iphoneos clang \
+xcrun clang -isysroot "$SDK" \
     -arch arm64 -arch arm64e -miphoneos-version-min=26.0 -O2 -Wall \
     -framework Foundation pfruntimeprobe.m -o pfruntimeprobe
-xcrun -sdk iphoneos clang \
+xcrun clang -isysroot "$SDK" \
     -arch arm64 -arch arm64e -miphoneos-version-min=26.0 -O2 -Wall \
     -framework Foundation pfwatch.m -o pfwatch
 

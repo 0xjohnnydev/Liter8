@@ -6,14 +6,17 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 TOOLS="$BASE/../../tools"
 LDID="$TOOLS/ldid_macosx_arm64"
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" || LDID=$(command -v ldid || true)
-SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+# Command Line Tools have no iPhoneOS SDK. Point LITER8_IOS_SDK at an
+# unpacked one (for example Theos's) to build without Xcode.
+SDK="${LITER8_IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
+[ -d "$SDK" ] || { echo "[!] iOS SDK missing: $SDK" >&2; exit 1; }
 OUT="$BASE/l8remotepairing.dylib"
 
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" \
     || { echo "[!] ldid at $LDID cannot run here; brew install ldid-procursus" >&2; exit 1; }
 
 for arch in arm64 arm64e; do
-    xcrun -sdk iphoneos clang -arch "$arch" -miphoneos-version-min=15.0 \
+    xcrun clang -arch "$arch" -miphoneos-version-min=15.0 \
         -isysroot "$SDK" -dynamiclib -O2 -Wall -Wextra -Werror \
         -Wl,-not_for_dyld_shared_cache \
         -Wl,-U,_MKBGetDeviceLockState \
