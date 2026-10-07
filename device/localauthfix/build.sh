@@ -21,7 +21,7 @@ fi
 
 xcrun clang -isysroot "$SDK" -arch arm64 -arch arm64e \
     -miphoneos-version-min=15.0 -O2 -Wall -Wextra -dynamiclib \
-    -Wl,-not_for_dyld_shared_cache -install_name /usr/lib/l8localauth.dylib \
+    -Wl,-not_for_dyld_shared_cache -install_name /var/jb/usr/lib/TweakInject/l8localauth.dylib \
     -framework Foundation -framework LocalAuthentication \
     l8localauth.m -o l8localauth.dylib
 "$LDID" -Icom.liter8.l8localauth -Cadhoc l8localauth.dylib

@@ -23,9 +23,11 @@
  *   - Changes no executable pages and needs no task port, so it works whether
  *     or not the code-signing-invalid kernel patches are present.
  *
- * Load it process-wide through lhook (it is an ObjC method swizzle, which the
- * injection path handles without the code-signing patches) or weak-load it into
- * a specific daemon. Build: device/localauthfix/build.sh.
+ * Install it as an ElleKit tweak: l8localauth.dylib and l8localauth.plist in
+ * /var/jb/usr/lib/TweakInject. lhook's TweakLoader then loads it into every
+ * Objective-C process (the filter is Foundation). It is a method swizzle, so it
+ * needs no code-signing patch. A daemon that is not injected can weak-load it
+ * instead. Build: device/localauthfix/build.sh.
  *
  * Self-test (no device, no injection):
  *   clang -DLITER8_LOCALAUTH_TEST -framework Foundation \
