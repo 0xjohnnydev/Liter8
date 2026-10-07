@@ -8,6 +8,9 @@ struct ResolverOptions {
     var panelID: UInt32?
     var json = false
     var recordsOutput: URL?
+    /// Keep the shipped IM4P compression when re-encoding. Selected by the
+    /// workflow profile's boot plan; see FirmwareArtifact.encoded.
+    var preserveCompression = false
 
     /// Most resolvers take neither `--boot-args` nor `--pinot-id`. Rejecting them
     /// by name beats the old behaviour of reprinting the whole global usage block,

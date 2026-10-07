@@ -112,6 +112,7 @@ assert document["components"]["iBSS"] == "Firmware/dfu/iBSS.test.im4p"
 assert document["bootPlan"] == {
     "normalIBSSAdditionalPlans": ["ibss-skip-display-init"],
     "restoreIBSSAdditionalPlans": ["ibss-skip-display-init"],
+    "preservesIM4PCompression": False,
 }
 ''')
 PY

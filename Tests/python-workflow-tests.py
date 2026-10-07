@@ -258,6 +258,7 @@ class ContextTests(unittest.TestCase):
             "bootPlan": {
                 "normalIBSSAdditionalPlans": ["ibss-skip-display-init"],
                 "restoreIBSSAdditionalPlans": ["ibss-skip-display-init"],
+                "preservesIM4PCompression": False,
             },
         }))
         self.environment = {
@@ -300,6 +301,50 @@ class ContextTests(unittest.TestCase):
             with patch.dict(os.environ, self.environment, clear=True):
                 with self.assertRaisesRegex(WorkflowError, "no reviewed boot plan"):
                     Context.load()
+        finally:
+            os.chdir(previous)
+
+    def test_rejects_boot_plan_without_compression_policy(self):
+        document = json.loads(self.context_file.read_text())
+        del document["bootPlan"]["preservesIM4PCompression"]
+        self.context_file.write_text(json.dumps(document))
+        previous = Path.cwd()
+        try:
+            os.chdir(self.work)
+            with patch.dict(os.environ, self.environment, clear=True):
+                with self.assertRaisesRegex(WorkflowError, "no IM4P compression policy"):
+                    Context.load()
+        finally:
+            os.chdir(previous)
+
+    def test_compression_policy_reaches_apply_and_repack(self):
+        document = json.loads(self.context_file.read_text())
+        document["bootPlan"]["preservesIM4PCompression"] = True
+        self.context_file.write_text(json.dumps(document))
+        previous = Path.cwd()
+        try:
+            os.chdir(self.work)
+            with patch.dict(os.environ, self.environment, clear=True):
+                context = Context.load()
+            self.assertTrue(context.preserve_im4p_compression)
+            target = self.work / "kernel.im4p"
+            target.write_bytes(b"pristine")
+            commands = []
+
+            def fake_run(command, **_):
+                commands.append([str(part) for part in command])
+                if command[1] == "apply":
+                    Path(command[5]).write_bytes(b"patched")
+
+            with (
+                patch("liter8_workflow.run", side_effect=fake_run),
+                patch.object(Context, "record_hash"),
+            ):
+                context.apply("kernel", "restore", target, record_name="kernel",
+                              capture_records=False)
+                context.repack_im4p(target, self.work / "raw", self.work / "out.im4p")
+            self.assertEqual([command[-1] for command in commands],
+                             ["--preserve-compression"] * 2)
         finally:
             os.chdir(previous)
 

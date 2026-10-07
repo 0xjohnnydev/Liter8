@@ -58,6 +58,7 @@ class Context:
     build: str = ""
     normal_ibss_additional_plans: tuple[str, ...] = ()
     restore_ibss_additional_plans: tuple[str, ...] = ()
+    preserve_im4p_compression: bool = False
 
     @classmethod
     def load(cls) -> "Context":
@@ -78,6 +79,9 @@ class Context:
         restore_plans = validate_ibss_additional_plans(
             boot_plan.get("restoreIBSSAdditionalPlans"), "restore"
         )
+        preserve_compression = boot_plan.get("preservesIM4PCompression")
+        if not isinstance(preserve_compression, bool):
+            raise WorkflowError("Liter8 context boot plan has no IM4P compression policy")
 
         work = Path.cwd().resolve()
         source = Path(document["sourceRoot"]).resolve()
@@ -95,6 +99,7 @@ class Context:
             build=str(document.get("build", "")),
             normal_ibss_additional_plans=normal_plans,
             restore_ibss_additional_plans=restore_plans,
+            preserve_im4p_compression=preserve_compression,
         )
 
     def component(self, name: str, *, in_cfw: bool = False) -> Path:
@@ -196,7 +201,10 @@ class Context:
 
     def repack_im4p(self, original: Path, payload: Path, output: Path) -> None:
         print(f"[*] repacking IM4P payload: {output.name}", flush=True)
-        run([self.liter8, "im4p", "repack", original, payload, output])
+        command = [self.liter8, "im4p", "repack", original, payload, output]
+        if self.preserve_im4p_compression:
+            command.append("--preserve-compression")
+        run(command)
 
     def apply(
         self,
@@ -232,6 +240,8 @@ class Context:
             command = [self.liter8, "apply", component, plan, target, temporary_path]
             if temporary_records_path is not None:
                 command.extend(["--records-out", temporary_records_path])
+            if self.preserve_im4p_compression:
+                command.append("--preserve-compression")
             run(command)
             os.replace(temporary_path, target)
             if temporary_records_path is not None:

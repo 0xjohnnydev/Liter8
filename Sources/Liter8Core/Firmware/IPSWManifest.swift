@@ -125,13 +125,19 @@ public enum DeviceIBSSAdditionalPlan: String, Codable, Equatable, Sendable {
 public struct DeviceBootPlan: Codable, Equatable, Sendable {
     public let normalIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
     public let restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
+    /// Re-encode patched IM4P payloads in their shipped compression instead
+    /// of uncompressed. n104 boots uncompressed images; the j171aap iBoot
+    /// rejects them and only accepts restricted LZFSE (see FirmwareArtifact).
+    public let preservesIM4PCompression: Bool
 
     public init(
         normalIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
-        restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
+        restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
+        preservesIM4PCompression: Bool = false
     ) {
         self.normalIBSSAdditionalPlans = normalIBSSAdditionalPlans
         self.restoreIBSSAdditionalPlans = restoreIBSSAdditionalPlans
+        self.preservesIM4PCompression = preservesIM4PCompression
     }
 }
 

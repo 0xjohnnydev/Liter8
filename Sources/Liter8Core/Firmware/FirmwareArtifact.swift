@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 import Img4tool
 
@@ -47,17 +48,31 @@ public struct FirmwareArtifact: Sendable {
 
     /// Rebuild the input representation around a replacement payload.
     /// Bare inputs stay bare; IM4P inputs stay IM4P.
-    public func encoded(replacingPayloadWith replacement: Data) throws -> Data {
+    ///
+    /// By default the payload is written back uncompressed, which is what the
+    /// reviewed n104 boot chain uses. `preservingCompression` keeps the
+    /// shipped LZSS or LZFSE representation instead, for boards whose iBoot
+    /// needs it (j171aap). It is selected per workflow profile, never globally.
+    public func encoded(
+        replacingPayloadWith replacement: Data,
+        preservingCompression: Bool = false
+    ) throws -> Data {
         guard let originalIM4P else { return replacement }
 
-        // The reviewed beta-4 tooling writes patched firmware components back
-        // uncompressed. We preserve the semantic container identity and, for
-        // kernel/TXM images, the PAYP metadata tail used by the boot chain.
-        let rebuilt = try IM4P(
-            fourcc: originalIM4P.fourcc,
-            description: originalIM4P.description,
-            payload: replacement
-        )
+        let compression = preservingCompression
+            ? try Self.compressionMode(of: originalIM4P.data)
+            : nil
+        let rebuilt: IM4P
+        if compression == "lzfse" {
+            rebuilt = try Self.ibootLZFSEContainer(originalIM4P, payload: replacement)
+        } else {
+            rebuilt = try IM4P(
+                fourcc: originalIM4P.fourcc,
+                description: originalIM4P.description,
+                payload: replacement,
+                compression: compression
+            )
+        }
         guard Self.paypFourCCs.contains(originalIM4P.fourcc) else {
             return rebuilt.data
         }
@@ -78,22 +93,136 @@ public struct FirmwareArtifact: Sendable {
 
     private static let paypFourCCs: Set<String> = ["krnl", "rkrn", "trxm"]
 
+    /// iBoot uses the restricted LZFSE decoder (0x891). A stream produced by
+    /// COMPRESSION_LZFSE (0x801) can round-trip on macOS yet fail in iBoot with
+    /// error 0x40040028. Keep this firmware policy here, outside the pinned
+    /// general-purpose IMG4 dependency. There is deliberately no 0x801 fallback.
+    private static func ibootLZFSEContainer(_ original: IM4P, payload: Data) throws -> IM4P {
+        guard !payload.isEmpty else {
+            throw PatchfinderError.invalidFirmwareContainer("cannot compress an empty firmware payload")
+        }
+        let algorithm = compression_algorithm(rawValue: 0x891)
+        let capacity = max(payload.count + payload.count / 8 + 1024, 4096)
+        var compressed = Data(count: capacity)
+        let size = compressed.withUnsafeMutableBytes { destination in
+            payload.withUnsafeBytes { source in
+                compression_encode_buffer(
+                    destination.bindMemory(to: UInt8.self).baseAddress!, capacity,
+                    source.bindMemory(to: UInt8.self).baseAddress!, payload.count,
+                    nil, algorithm
+                )
+            }
+        }
+        guard size > 0 else {
+            throw PatchfinderError.invalidFirmwareContainer("iBoot-compatible LZFSE compression failed")
+        }
+        compressed.count = size
+
+        // Use the device's decoder variant, with an extra byte to detect a
+        // stream that would otherwise be silently truncated to the buffer size.
+        var decoded = Data(count: payload.count + 1)
+        let decodedCapacity = decoded.count
+        let decodedSize = decoded.withUnsafeMutableBytes { destination in
+            compressed.withUnsafeBytes { source in
+                compression_decode_buffer(
+                    destination.bindMemory(to: UInt8.self).baseAddress!, decodedCapacity,
+                    source.bindMemory(to: UInt8.self).baseAddress!, compressed.count,
+                    nil, algorithm
+                )
+            }
+        }
+        guard decodedSize == payload.count, decoded.prefix(decodedSize) == payload else {
+            throw PatchfinderError.invalidFirmwareContainer("iBoot LZFSE verification failed")
+        }
+
+        var container = try IM4P(
+            fourcc: original.fourcc, description: original.description,
+            payload: compressed
+        ).data
+        // IM4P compression descriptor: SEQUENCE { INTEGER 1, INTEGER size }.
+        var sizeBytes = withUnsafeBytes(of: UInt64(payload.count).bigEndian) { Data($0) }
+        while sizeBytes.count > 1, sizeBytes.first == 0 { sizeBytes.removeFirst() }
+        if sizeBytes.first! & 0x80 != 0 { sizeBytes.insert(0, at: 0) }
+        let fields = Data([0x02, 0x01, 0x01, 0x02]) + derLength(sizeBytes.count) + sizeBytes
+        let descriptor = Data([0x30]) + derLength(fields.count) + fields
+        try updateTopLevelDERLength(of: &container, adding: descriptor.count)
+        container.append(descriptor)
+        return try IM4P(container)
+    }
+
     /// libimg4 rebuilds the DER sequence itself. PAYP is an Apple extension
-    /// appended after the ordinary IM4P children, so copy it from the shipped
-    /// container and grow the outer DER length to include it.
+    /// appended after the ordinary IM4P children, so copy the complete PAYP
+    /// DER child from the shipped container and grow the outer DER length to
+    /// include it. Its header is not a fixed size: on n104 it happens to be
+    /// ten bytes before the "PAYP" text, on the T8020 kernel only eight, so
+    /// the child is located by walking the DER structure.
     private static func appendPAYPIfPresent(from original: Data, to rebuilt: Data) throws -> Data {
-        let marker = Data("PAYP".utf8)
-        guard let markerRange = original.range(of: marker, options: .backwards),
-              markerRange.lowerBound >= 10
-        else {
+        let children = try topLevelChildren(in: original)
+        guard let payp = children.dropFirst(4).first(where: { field in
+            original[field.lowerBound] == 0xA0
+                && original[field].range(of: Data("PAYP".utf8)) != nil
+        }) else {
             return rebuilt
         }
 
-        let tail = original[(markerRange.lowerBound - 10)..<original.endIndex]
+        let tail = original[payp]
         var output = rebuilt
         try updateTopLevelDERLength(of: &output, adding: tail.count)
         output.append(tail)
         return output
+    }
+
+    private static func compressionMode(of original: Data) throws -> String? {
+        let children = try topLevelChildren(in: original)
+        guard children.count >= 4, original[children[3].lowerBound] == 0x04 else {
+            throw PatchfinderError.invalidFirmwareContainer("IM4P has no payload OCTET STRING")
+        }
+        let payload = try derValueRange(in: original, at: children[3].lowerBound)
+        if original[payload].starts(with: Data("bvx2".utf8)) { return "lzfse" }
+        if original[payload].starts(with: Data("complzss".utf8)) { return "lzss" }
+        return nil
+    }
+
+    private static func topLevelChildren(in data: Data) throws -> [Range<Int>] {
+        guard data.count >= 2, data[0] == 0x30 else {
+            throw PatchfinderError.invalidFirmwareContainer("IM4P has no DER sequence")
+        }
+        let body = try derValueRange(in: data, at: 0)
+        guard body.upperBound == data.count else {
+            throw PatchfinderError.invalidFirmwareContainer("IM4P has trailing DER data")
+        }
+        var fields: [Range<Int>] = []
+        var cursor = body.lowerBound
+        while cursor < body.upperBound {
+            let value = try derValueRange(in: data, at: cursor)
+            fields.append(cursor..<value.upperBound)
+            cursor = value.upperBound
+        }
+        return fields
+    }
+
+    private static func derValueRange(in data: Data, at offset: Int) throws -> Range<Int> {
+        guard offset >= 0, offset + 2 <= data.count else {
+            throw PatchfinderError.invalidFirmwareContainer("truncated DER field")
+        }
+        let first = data[offset + 1]
+        let header: Int
+        let length: Int
+        if first < 0x80 {
+            header = 2
+            length = Int(first)
+        } else {
+            let count = Int(first & 0x7F)
+            guard count > 0, count <= 4, offset + 2 + count <= data.count else {
+                throw PatchfinderError.invalidFirmwareContainer("malformed DER field length")
+            }
+            header = 2 + count
+            length = data[(offset + 2)..<(offset + header)].reduce(0) { ($0 << 8) | Int($1) }
+        }
+        guard length <= data.count - offset - header else {
+            throw PatchfinderError.invalidFirmwareContainer("DER field exceeds IM4P")
+        }
+        return (offset + header)..<(offset + header + length)
     }
 
     private static func updateTopLevelDERLength(of data: inout Data, adding extraBytes: Int) throws {

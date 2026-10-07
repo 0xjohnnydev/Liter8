@@ -110,6 +110,12 @@ struct Apply: ParsableCommand {
     )
     var recordsOut: String?
 
+    @Flag(
+        name: .customLong("preserve-compression"),
+        help: "Keep the shipped IM4P compression instead of writing the payload back uncompressed."
+    )
+    var preserveCompression = false
+
     @OptionGroup var tuning: ResolverTuningOptions
 
     func validate() throws {
@@ -119,6 +125,7 @@ struct Apply: ParsableCommand {
     func run() throws {
         let resolver = try requireResolver(component: component, plan: plan)
         var options = tuning.resolverOptions
+        options.preserveCompression = preserveCompression
         options.recordsOutput = recordsOut.map {
             URL(fileURLWithPath: $0).standardizedFileURL
         }
@@ -144,7 +151,10 @@ struct Apply: ParsableCommand {
             }
             try artifact.requireIM4PFourCC("dtre")
             let result = try DeviceTreePatcher.patch(artifact.payload, plan: plan)
-            let encoded = try artifact.encoded(replacingPayloadWith: result.data)
+            let encoded = try artifact.encoded(
+                replacingPayloadWith: result.data,
+                preservingCompression: options.preserveCompression
+            )
             try encoded.write(to: outputURL, options: .atomic)
             printDeviceTreeChanges(result.changes)
             let delta = result.data.count - artifact.payload.count
@@ -157,7 +167,10 @@ struct Apply: ParsableCommand {
         reportProfile(for: image, resolver: resolver)
         let records = try resolveRecords(named: resolver, in: image, options: options)
         let result = try GuardedPatchApplier.apply(records, to: image)
-        let encoded = try artifact.encoded(replacingPayloadWith: result.data)
+        let encoded = try artifact.encoded(
+            replacingPayloadWith: result.data,
+            preservingCompression: options.preserveCompression
+        )
 
         // Atomic replacement protects an existing output path from a partial
         // write. The input artifact is never modified in place.
