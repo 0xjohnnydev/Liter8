@@ -56,6 +56,7 @@ from userland_fixups import (  # noqa: E402
     signing_identifier,
 )
 from patch_setup import discover_targets  # noqa: E402
+from apfs_role import volume_for_role  # noqa: E402
 from patch_watchdogd_job import (  # noqa: E402
     CACHE_KEY as WATCHDOGD_CACHE_KEY,
     EXPECTED_MACH_SERVICES,
@@ -75,6 +76,29 @@ from add_ddi_services import (  # noqa: E402
     remove_job as remove_ddi_job,
     validate_document as validate_ddi_document,
 )
+
+
+class APFSRoleTests(unittest.TestCase):
+    def test_preboot_is_selected_by_role_instead_of_partition_number(self):
+        registry = '''+-o Preboot@5 <class AppleAPFSVolume, id 1>
+          "Role" = ("Preboot")
+          "BSD Name" = "disk1s5"
+        +-o Update@6 <class AppleAPFSVolume, id 2>
+          "Role" = ("Update")
+          "BSD Name" = "disk1s6"
+        '''
+        self.assertEqual(volume_for_role(registry, "Preboot"), "/dev/disk1s5")
+        colored = registry.replace('"Role"', '\x1b[0;31m"Role"')
+        self.assertEqual(volume_for_role(colored, "Preboot"), "/dev/disk1s5")
+
+    def test_missing_ambiguous_or_unsafe_role_is_rejected(self):
+        volume = '''+-o Preboot@5 <class AppleAPFSVolume, id 1>
+          "Role" = ("Preboot")
+          "BSD Name" = "disk1s5"
+        '''
+        for registry in ("", volume + volume, volume.replace("disk1s5", "disk1s5;reboot")):
+            with self.assertRaises(ValueError):
+                volume_for_role(registry, "Preboot")
 
 
 class DeveloperDiskImageJobTests(unittest.TestCase):
