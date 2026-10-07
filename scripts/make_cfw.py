@@ -10,13 +10,13 @@ from liter8_workflow import Context, WorkflowError, main_guard, run
 def build() -> None:
     context = Context.load()
     context.prepare_cfw()
-    ramdisk = context.work / "Ramdisk"
-    ramdisk.mkdir(exist_ok=True)
 
     # iBSS is consumed as a raw payload by usbliter8ctl, rather than from CFW.
+    # Keep it outside Ramdisk: get-rd and get-boot replace that directory
+    # with their own iBSS.raw, which would leave restore-cfw the wrong one.
     print("[*] CFW component 1/6: restore iBSS", flush=True)
     ibss_container = context.backup(context.component("iBSS", in_cfw=True))
-    ibss_raw = ramdisk / "iBSS.raw"
+    ibss_raw = context.work / "CFW-iBSS.raw"
     context.extract_im4p(ibss_container, ibss_raw)
     context.apply("iboot", "ibss-restore", ibss_raw, record_name="ibss-restore")
 

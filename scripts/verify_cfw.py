@@ -14,7 +14,7 @@ def sha256(path: Path) -> str:
 def verify() -> None:
     context = Context.load()
     targets = {
-        "ibss-restore": context.work / "Ramdisk/iBSS.raw",
+        "ibss-restore": context.work / "CFW-iBSS.raw",
         "ibec-restore": context.component("iBEC", in_cfw=True),
         "devicetree-restore": context.component("RestoreDeviceTree", in_cfw=True),
         "txm-restore": context.component("Ap,RestoreTrustedExecutionMonitor", in_cfw=True),
