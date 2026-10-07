@@ -677,8 +677,8 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     sh_dev 'mkdir -p /mnt1/usr/lib /mnt1/usr/local/bin /mnt2/jb/etc' \
         || die "could not create injection directories"
     must_dev '
-if [ -f /mnt1/usr/lib/lhook.dylib ] && [ ! -f /mnt1/usr/lib/lhook.dylib.orig ]; then
-    cp /mnt1/usr/lib/lhook.dylib /mnt1/usr/lib/lhook.dylib.orig
+if [ -f /mnt1/usr/lib/lhook ] && [ ! -f /mnt1/usr/lib/lhook.orig ]; then
+    cp /mnt1/usr/lib/lhook /mnt1/usr/lib/lhook.orig
 fi
 if [ -f /mnt1/usr/lib/systemhook.dylib ] && [ ! -f /mnt1/usr/lib/systemhook.dylib.orig ]; then
     cp /mnt1/usr/lib/systemhook.dylib /mnt1/usr/lib/systemhook.dylib.orig
@@ -692,12 +692,12 @@ fi
 echo DONE_OK
 ' "could not preserve existing injection files"
     put payload/launchd.hooked /mnt1/sbin/launchd.usbl8r-new
-    put payload/lhook.dylib /mnt1/usr/lib/lhook.dylib.usbl8r-new
+    put payload/lhook.dylib /mnt1/usr/lib/lhook.usbl8r-new
     put payload/systemhook.dylib /mnt1/usr/lib/systemhook.dylib.usbl8r-new
     put payload/sbextissue /mnt1/usr/local/bin/sbextissue.usbl8r-new
     put launchdhook/lhook.deny /mnt2/jb/etc/lhook.deny.new
     sh_dev 'cat /mnt1/sbin/launchd.usbl8r-new' > payload/.work/launchd.staged
-    sh_dev 'cat /mnt1/usr/lib/lhook.dylib.usbl8r-new' > payload/.work/lhook.staged
+    sh_dev 'cat /mnt1/usr/lib/lhook.usbl8r-new' > payload/.work/lhook.staged
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib.usbl8r-new' > payload/.work/systemhook.staged
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue.usbl8r-new' > payload/.work/sbextissue.staged
     [ "$(shasum -a 256 payload/.work/launchd.staged | awk '{print $1}')" = "$hooked_sha" ] \
@@ -709,11 +709,11 @@ echo DONE_OK
     [ "$(shasum -a 256 payload/.work/sbextissue.staged | awk '{print $1}')" = "$sbextissue_sha" ] \
         || die "staged sbextissue hash mismatch; original is still active"
     must_dev '
-chmod 0755 /mnt1/sbin/launchd.usbl8r-new /mnt1/usr/lib/lhook.dylib.usbl8r-new
+chmod 0755 /mnt1/sbin/launchd.usbl8r-new /mnt1/usr/lib/lhook.usbl8r-new
 chmod 0755 /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/local/bin/sbextissue.usbl8r-new
 chmod 0644 /mnt2/jb/etc/lhook.deny.new
 mv -f /mnt1/sbin/launchd.usbl8r-new /mnt1/sbin/launchd
-mv -f /mnt1/usr/lib/lhook.dylib.usbl8r-new /mnt1/usr/lib/lhook.dylib
+mv -f /mnt1/usr/lib/lhook.usbl8r-new /mnt1/usr/lib/lhook
 mv -f /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/lib/systemhook.dylib
 mv -f /mnt1/usr/local/bin/sbextissue.usbl8r-new /mnt1/usr/local/bin/sbextissue
 mv -f /mnt2/jb/etc/lhook.deny.new /mnt2/jb/etc/lhook.deny
@@ -725,7 +725,7 @@ echo DONE_OK
 
     sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/launchd.readback
     sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/launchd.bak.readback
-    sh_dev 'cat /mnt1/usr/lib/lhook.dylib' > payload/.work/lhook.readback
+    sh_dev 'cat /mnt1/usr/lib/lhook' > payload/.work/lhook.readback
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib' > payload/.work/systemhook.readback
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue' > payload/.work/sbextissue.readback
     [ "$(shasum -a 256 payload/.work/launchd.readback | awk '{print $1}')" = "$hooked_sha" ] \
@@ -1221,7 +1221,7 @@ if [ -f payload/launchd.orig ] && [ -f payload/launchd.hooked ] && \
     else
         sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/verify.launchd 2>/dev/null || true
         sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/verify.launchd.bak 2>/dev/null || true
-        sh_dev 'cat /mnt1/usr/lib/lhook.dylib' > payload/.work/verify.lhook 2>/dev/null || true
+        sh_dev 'cat /mnt1/usr/lib/lhook' > payload/.work/verify.lhook 2>/dev/null || true
         sh_dev 'cat /mnt1/usr/lib/systemhook.dylib' > payload/.work/verify.systemhook 2>/dev/null || true
         sh_dev 'cat /mnt1/usr/local/bin/sbextissue' > payload/.work/verify.sbextissue 2>/dev/null || true
         [ -s payload/.work/verify.launchd ] && \
@@ -1234,7 +1234,7 @@ if [ -f payload/launchd.orig ] && [ -f payload/launchd.hooked ] && \
             && injection_backup=OK || injection_backup=MISMATCH
         [ -s payload/.work/verify.lhook ] && \
             [ "$(shasum -a 256 payload/.work/verify.lhook | awk '{print $1}')" = "$verify_lhook" ] && \
-            sh_dev '[ -x /mnt1/usr/lib/lhook.dylib ]' \
+            sh_dev '[ -x /mnt1/usr/lib/lhook ]' \
             && injection_hook=OK || injection_hook=MISMATCH
         [ -s payload/.work/verify.systemhook ] && \
             [ "$(shasum -a 256 payload/.work/verify.systemhook | awk '{print $1}')" = "$verify_systemhook" ] && \

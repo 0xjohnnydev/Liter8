@@ -774,6 +774,10 @@ The patcher can also emit a JSON record containing each class, IMP, file offset,
 
 ### launchd: `/usr/lib/lhook.dylib` is the only option that fits
 
+> Superseded: iPadOS 26.7.1 `23H30` launchd has 40 bytes of slack, a
+> 15-character budget, so the hook now lives at `/usr/lib/lhook` (40-byte
+> command) on every build. The analysis below is unchanged otherwise.
+
 |  | value |
 | --- | --- |
 | RC `/sbin/launchd` | 639376 bytes |

@@ -14,6 +14,8 @@ The command has to fit in the zero padding between the end of the existing load
 commands and the start of the first __TEXT section. launchd on 24A5390f has 48
 bytes there, which caps the path at 23 characters. That is why the reference
 implementation uses a two-character path; it is not a stylistic choice.
+iPadOS 26.7.1 23H30 launchd has only 40 bytes, a 15-character budget, so
+Liter8 uses /usr/lib/lhook (14 characters), which fits both.
 
 The hook must live on the System volume. At the moment dyld resolves launchd's
 dependencies the Data volume is not mounted yet, so /var/jb is not reachable.
@@ -108,7 +110,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary", help="input Mach-O, never modified in place")
     parser.add_argument("-o", "--output", help="where to write the patched copy")
-    parser.add_argument("--path", default="/usr/lib/lhook.dylib",
+    parser.add_argument("--path", default="/usr/lib/lhook",
                         help="dylib path to load (default: %(default)s)")
     parser.add_argument("--apply", action="store_true",
                         help="write the output; without it this only reports")
