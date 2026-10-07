@@ -1,6 +1,7 @@
 /* Liter8's launchd bootstrap and process-local tweak loader.
  * Only this System-volume image is inserted by dyld. Its constructor consumes
- * a read-only /private/var/jb sandbox extension before dlopening ElleKit.
+ * /private/var/jb sandbox extensions (read, and map-executable) before
+ * dlopening ElleKit.
  * PID 1 and xpcproxy propagate launch state but never load tweaks.
  */
 #include <dlfcn.h>
@@ -41,8 +42,17 @@ static const char *kSelf       = LHOOK_SELF_PATH;
 #define LHOOK_PAYLOAD_C "/var/jb/usr/lib/TweakLoader.dylib"
 #endif
 static const char *kLoader = LHOOK_PAYLOAD_C;
-static const char kTokenKey[] = "LITER8_SANDBOX_READ_TOKEN=";
-#define TOKEN_KEY_LEN (sizeof(kTokenKey) - 1)
+/* Sandbox grants the parent mints for an injected child, one environment
+ * variable each. Read lets a sandboxed process open /private/var/jb; the
+ * container profile checks mapping a dylib executable separately
+ * (file-map-executable), so dlopen of TweakLoader and the tweaks also needs
+ * the executable class, as other rootless loaders issue for their root. */
+static const char *kGrantRoot = "/private/var/jb";
+static const struct grant { const char *key; const char *cls; } kGrants[] = {
+    { "LITER8_SANDBOX_READ_TOKEN=", "com.apple.app-sandbox.read" },
+    { "LITER8_SANDBOX_EXEC_TOKEN=", "com.apple.sandbox.executable" },
+};
+#define GRANT_COUNT (sizeof(kGrants) / sizeof(kGrants[0]))
 typedef char *(*issue_file_fn)(const char *, const char *, uint32_t);
 typedef int64_t (*consume_fn)(const char *);
 
@@ -259,9 +269,16 @@ static void *marker_thread(void *unused) {
 static const char kInsertKey[] = "DYLD_INSERT_LIBRARIES=";
 #define INSERT_KEY_LEN (sizeof(kInsertKey) - 1)
 
-/* Ownership is explicit: only the array, insert value and token value are ours.
- * Other environment entries remain borrowed from the caller. */
-struct child_env { char **values; char *insert; char *token; };
+/* Ownership is explicit: only the array, insert value and token values are
+ * ours. Other environment entries remain borrowed from the caller. */
+struct child_env { char **values; char *insert; char *tokens[GRANT_COUNT]; };
+
+/* Index of the grant whose key prefixes this entry, or -1. */
+static int grant_key(const char *entry) {
+    for (size_t g = 0; g < GRANT_COUNT; g++)
+        if (!strncmp(entry, kGrants[g].key, strlen(kGrants[g].key))) return (int)g;
+    return -1;
+}
 
 static int own_library(const char *path) {
     return !strcmp(path, kSelf) || !strcmp(path, kLoader) ||
@@ -274,31 +291,31 @@ static int own_library(const char *path) {
 static int env_has_our_keys(char *const envp[]) {
     for (int i = 0; envp && envp[i]; i++) {
         if (!strncmp(envp[i], kInsertKey, INSERT_KEY_LEN)) return 1;
-        if (!strncmp(envp[i], kTokenKey, TOKEN_KEY_LEN)) return 1;
+        if (grant_key(envp[i]) >= 0) return 1;
     }
     return 0;
 }
 
 static void free_child_env(struct child_env *env) {
     free(env->insert);
-    free(env->token);
+    for (size_t g = 0; g < GRANT_COUNT; g++) free(env->tokens[g]);
     free(env->values);
 }
 
 static int make_child_env(char *const input[], int inject, struct child_env *out) {
     size_t count = 0;
-    const char *existing = NULL, *inherited_token = NULL;
+    const char *existing = NULL, *inherited[GRANT_COUNT] = {0};
     while (input && input[count]) {
         const char *v = input[count++];
         if (!strncmp(v, kInsertKey, INSERT_KEY_LEN) && !existing)
             existing = v + INSERT_KEY_LEN;
-        if (!strncmp(v, kTokenKey, TOKEN_KEY_LEN) && !inherited_token)
-            inherited_token = v + TOKEN_KEY_LEN;
+        int g = grant_key(v);
+        if (g >= 0 && !inherited[g]) inherited[g] = v + strlen(kGrants[g].key);
     }
     size_t capacity = strlen(kSelf) + (existing ? strlen(existing) : 0) + 2;
     char *libraries = calloc(1, capacity);
     char *copy = existing ? strdup(existing) : NULL;
-    out->values = calloc(count + 3, sizeof(char *));
+    out->values = calloc(count + 2 + GRANT_COUNT, sizeof(char *));
     if (!libraries || (existing && !copy) || !out->values) {
         free(libraries); free(copy); return ENOMEM;
     }
@@ -319,21 +336,25 @@ static int make_child_env(char *const input[], int inject, struct child_env *out
         /* A sandboxed descendant may be unable to issue a new extension. The
          * inherited bearer remains valid for this boot and this directory. */
         issue_file_fn issue = (issue_file_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_issue_file");
-        char *fresh = issue ? issue("com.apple.app-sandbox.read", "/private/var/jb", 0) : NULL;
-        const char *token = fresh ? fresh : inherited_token;
-        if (token && *token && asprintf(&out->token, "%s%s", kTokenKey, token) < 0) {
-            out->token = NULL; free(fresh); return ENOMEM;
+        for (size_t g = 0; g < GRANT_COUNT; g++) {
+            char *fresh = issue ? issue(kGrants[g].cls, kGrantRoot, 0) : NULL;
+            const char *token = fresh ? fresh : inherited[g];
+            if (token && *token &&
+                asprintf(&out->tokens[g], "%s%s", kGrants[g].key, token) < 0) {
+                out->tokens[g] = NULL; free(fresh); return ENOMEM;
+            }
+            free(fresh);
         }
-        free(fresh);
     }
     size_t used = 0;
     for (size_t i = 0; i < count; i++) {
-        if (!strncmp(input[i], kInsertKey, INSERT_KEY_LEN) ||
-            !strncmp(input[i], kTokenKey, TOKEN_KEY_LEN)) continue;
+        if (!strncmp(input[i], kInsertKey, INSERT_KEY_LEN) || grant_key(input[i]) >= 0)
+            continue;
         out->values[used++] = input[i];
     }
     if (out->insert) out->values[used++] = out->insert;
-    if (out->token) out->values[used++] = out->token;
+    for (size_t g = 0; g < GRANT_COUNT; g++)
+        if (out->tokens[g]) out->values[used++] = out->tokens[g];
     return 0;
 }
 
@@ -389,13 +410,22 @@ DYLD_INTERPOSE(my_posix_spawnp, posix_spawnp)
  * A failure leaves the host running without tweaks; it never aborts launch. */
 int liter8_load_tweaks(void) {
     if (getpid() == 1) return 0;
-    const char *token = getenv("LITER8_SANDBOX_READ_TOKEN");
-    if (token && *token) {
-        consume_fn consume = (consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
-        if (!consume || consume(token) < 0) {
-            os_log_error(OS_LOG_DEFAULT, "Liter8: sandbox grant failed pid=%d", getpid());
-            return -1;
-        }
+    /* Read is required: without it nothing under /var/jb is visible. The
+     * executable grant only matters to processes whose profile checks
+     * file-map-executable, so its failure is logged and loading continues. */
+    consume_fn consume = (consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+    for (size_t g = 0; g < GRANT_COUNT; g++) {
+        char name[64];
+        size_t length = strlen(kGrants[g].key) - 1; /* without '=' */
+        if (length >= sizeof name) continue;
+        memcpy(name, kGrants[g].key, length);
+        name[length] = '\0';
+        const char *token = getenv(name);
+        if (!token || !*token) continue;
+        if (consume && consume(token) >= 0) continue;
+        os_log_error(OS_LOG_DEFAULT, "Liter8: sandbox grant %{public}s failed pid=%d",
+                     kGrants[g].cls, getpid());
+        if (g == 0) return -1;
     }
     if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
     if (!file_exists(kLoader)) return 0;

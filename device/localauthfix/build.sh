@@ -22,8 +22,12 @@ fi
 xcrun clang -isysroot "$SDK" -arch arm64 -arch arm64e \
     -miphoneos-version-min=15.0 -O2 -Wall -Wextra -dynamiclib \
     -Wl,-not_for_dyld_shared_cache -install_name /var/jb/usr/lib/TweakInject/l8localauth.dylib \
-    -framework Foundation -framework LocalAuthentication \
+    -framework Foundation \
     l8localauth.m -o l8localauth.dylib
+# The filter reaches every Objective-C process; linking LocalAuthentication
+# would load it into all of them. The hook installs when LAContext appears.
+otool -L l8localauth.dylib | grep -q LocalAuthentication \
+    && { echo "[!] l8localauth links LocalAuthentication" >&2; exit 1; }
 "$LDID" -Icom.liter8.l8localauth -Cadhoc l8localauth.dylib
 codesign -d --entitlements :- l8localauth.dylib 2>/dev/null | grep -q get-task-allow \
     && { echo "[!] l8localauth carries get-task-allow, AMFI will kill it"; exit 1; }
