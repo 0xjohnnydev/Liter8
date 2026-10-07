@@ -9,10 +9,14 @@ import Foundation
 ///
 /// The patterns are ported from the palera1n/PongoOS KPF (MIT), the `t8020`
 /// bring-up branch for the PPL producer, with Liter8's own guards layered on:
-/// every resolver is gated on a kernel profile that opts in, requires a single
-/// unambiguous match, and records the exact original word so the guarded
-/// applier refuses a kernel whose bytes differ. A kernel that does not match
-/// produces no candidate rather than a wrong patch.
+/// the composed plan is gated on a kernel profile that opts in, every resolver
+/// requires a single unambiguous match, and every record carries the exact
+/// original word so the guarded applier refuses a kernel whose bytes differ. A
+/// kernel that does not match produces no candidate rather than a wrong patch.
+///
+/// The individual resolvers are not gated, so `liter8 resolve kernel
+/// ppl-allow-invalid <kc>` can probe an unregistered kernel on purpose. Only
+/// `requiredRecords`, which feeds `boot-jit`, requires the profile opt-in.
 ///
 /// These are deliberately NOT part of `boot-public`. They weaken code signing
 /// for every process, so they live in the separate `boot-jit` plan. A profile
@@ -24,7 +28,7 @@ public enum KernelCodeSigningResolver {
     static let variantKey = "kernel-codesign-invalid"
 
     /// Records for the composed JIT plan. Empty unless the detected profile
-    /// opts in, so a kernel with no entry here is never touched.
+    /// opts in, so a kernel with no entry here is never touched by boot-jit.
     static func requiredRecords(in image: BinaryImage) throws -> [PatchRecord] {
         guard KernelResolverProfileRegistry.detect(in: image)?
             .variants(for: variantKey) != nil else {
@@ -33,22 +37,6 @@ public enum KernelCodeSigningResolver {
         return try KernelPPLAllowInvalidResolver().resolve(in: image)
             + KernelVMFaultCSBypassResolver().resolve(in: image)
             + KernelVMMapProtectResolver().resolve(in: image)
-    }
-
-    /// Shared opt-in gate. Each resolver still runs standalone for diagnosis
-    /// (`liter8 resolve kernel ppl-allow-invalid <kc>`), where the gate is
-    /// skipped so a researcher can probe an unregistered kernel on purpose.
-    fileprivate static func requireOptIn(
-        _ resolver: String, in image: BinaryImage
-    ) throws {
-        let profile = KernelResolverProfileRegistry.detect(in: image)
-        guard profile?.variants(for: variantKey) != nil else {
-            throw PatchfinderError.unsupportedFirmwareProfile(
-                resolver: resolver,
-                profile: profile?.id ?? "unidentified",
-                variant: "codesign-invalid not opted in"
-            )
-        }
     }
 }
 
@@ -97,7 +85,6 @@ public struct KernelPPLAllowInvalidResolver: Sendable {
     private static let producerVariantBWord10: UInt32 = 0xf80b_427f // stur xzr, [x19, #0xb4]
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
-        try KernelCodeSigningResolver.requireOptIn(Self.name, in: image)
         let layout = try MachOLayout(image: image)
 
         var hits: [UInt64] = []
@@ -184,7 +171,6 @@ public struct KernelVMFaultCSBypassResolver: Sendable {
     public init() {}
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
-        try KernelCodeSigningResolver.requireOptIn(Self.name, in: image)
         let layout = try MachOLayout(image: image)
 
         var candidates: [UInt64] = []
@@ -291,7 +277,6 @@ public struct KernelVMMapProtectResolver: Sendable {
     ])
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
-        try KernelCodeSigningResolver.requireOptIn(Self.name, in: image)
         let layout = try MachOLayout(image: image)
 
         var hits: [(offset: UInt64, shape: Shape)] = []

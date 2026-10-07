@@ -3,8 +3,8 @@ import XCTest
 @testable import Liter8Core
 
 /// Synthetic-image coverage for the code-signing-invalid resolvers. These pin
-/// the transform and the fail-safe behaviour; they do not read firmware, so the
-/// exact-build fixtures still have to confirm the real 23H30 kernel.
+/// the transform and the fail-safe behaviour; they do not read firmware, so an
+/// exact-build fixture still has to confirm any real kernel that opts in.
 ///
 /// The images carry the T8020 kernel fingerprint so the opt-in gate is
 /// satisfied the same way a real kernelcache satisfies it.
@@ -13,7 +13,9 @@ final class KernelCodeSigningResolverTests: XCTestCase {
 
     /// One executable __TEXT_EXEC segment holding `words`, plus the T8020
     /// fingerprint string so profile detection opts the kernel in.
-    private func image(words: [UInt32], textFileOffset: UInt64 = 0x4000) -> BinaryImage {
+    private func image(
+        words: [UInt32], textFileOffset: UInt64 = 0x4000, fingerprinted: Bool = true
+    ) -> BinaryImage {
         var data = Data(count: Int(textFileOffset))
         data.replaceSubrange(0..<4, with: withUnsafeBytes(of: UInt32(0xFEED_FACF).littleEndian, Array.init))
         data.replaceSubrange(16..<20, with: withUnsafeBytes(of: UInt32(1).littleEndian, Array.init))
@@ -41,8 +43,10 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         }
         // The fingerprint lives outside the executable segment, which is fine:
         // detection scans the whole image, resolvers scan only __TEXT_EXEC.
-        data.append(Data(fingerprint.utf8))
-        data.append(0)
+        if fingerprinted {
+            data.append(Data(fingerprint.utf8))
+            data.append(0)
+        }
         return BinaryImage(data: data)
     }
 
@@ -192,5 +196,13 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         data.replaceSubrange(0..<4, with: withUnsafeBytes(of: UInt32(0xFEED_FACF).littleEndian, Array.init))
         let bare = BinaryImage(data: data)
         XCTAssertEqual(try KernelCodeSigningResolver.requiredRecords(in: bare).count, 0)
+    }
+
+    func testStandaloneResolverProbesAnUnregisteredKernel() throws {
+        // No fingerprint: the standalone resolver still runs for diagnosis,
+        // but the composed boot-jit records stay empty.
+        let image = image(words: nop(4) + pplProducer + nop(4), fingerprinted: false)
+        XCTAssertEqual(try KernelPPLAllowInvalidResolver().resolve(in: image).count, 2)
+        XCTAssertEqual(try KernelCodeSigningResolver.requiredRecords(in: image).count, 0)
     }
 }
