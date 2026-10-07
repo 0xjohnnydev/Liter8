@@ -213,7 +213,11 @@ def build_normal_boot() -> None:
         print("[*] normal boot: patching kernelcache", flush=True)
         kernel = staging / ".Kernelcache.im4p"
         shutil.copy2(context.component("KernelCache"), kernel)
-        kernel_plan = "boot-public"
+        # boot-jit adds the code-signing-invalid patches so runtime tweak hooks
+        # are not killed. It is opt-in (fw get-boot --tweaks) because it weakens
+        # code signing for every process, and its extra records resolve only on
+        # a kernel profile that registers the patches.
+        kernel_plan = "boot-jit" if os.environ.get("LITER8_ENABLE_TWEAK_HOOKS") == "1" else "boot-public"
         context.apply("kernel", kernel_plan, kernel, record_name="boot-kernel")
         create_img4(
             context, kernel, ticket, staging / "Kernelcache.img4", fourcc="rkrn"
