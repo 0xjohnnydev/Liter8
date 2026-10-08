@@ -267,6 +267,7 @@ if wants injection; then
     cp launchdhook/lhook.dylib "$OUT/lhook.dylib"
     cp launchdhook/systemhook.dylib "$OUT/systemhook.dylib"
     cp launchdhook/sbextissue "$OUT/sbextissue"
+    cp launchdhook/lhookctl "$OUT/lhookctl"
 
     cp "$STOCK" "$WORK/launchd.orig"
     python3 launchdhook/patch_launchd.py "$WORK/launchd.orig" \

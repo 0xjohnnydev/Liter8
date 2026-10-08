@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "lhook_session.h"
 
 #define DYLD_INTERPOSE(_replacement, _replacee)                                        \
     __attribute__((used)) static struct {                                              \
@@ -45,10 +46,6 @@ static const char kTokenKey[] = "LITER8_SANDBOX_READ_TOKEN=";
 typedef char *(*issue_file_fn)(const char *, const char *, uint32_t);
 typedef int64_t (*consume_fn)(const char *);
 
-#ifndef LHOOK_ENABLE_PATH
-#define LHOOK_ENABLE_PATH "/var/jb/.lhook_enabled"
-#endif
-static const char *kEnableFile = LHOOK_ENABLE_PATH;
 static const char *kDebugFile  = "/var/jb/.lhook_debug";
 static const char *kLogFile    = "/var/jb/tmp/lhook.log";
 
@@ -347,7 +344,7 @@ static int spawn_common(int (*real)(pid_t *, const char *,
                         const posix_spawn_file_actions_t *actions,
                         const posix_spawnattr_t *attr,
                         char *const argv[], char *const envp[]) {
-    int inject = file_exists(kEnableFile) && !denied(path) && any_payload_exists();
+    int inject = lhook_session_enabled() && !denied(path) && any_payload_exists();
 
     /* Early-boot fast path. During launchd's own startup /var/jb is not mounted,
      * so inject is false and there is nothing of ours to strip. Do not allocate
@@ -400,7 +397,7 @@ int liter8_load_tweaks(void) {
             return -1;
         }
     }
-    if (!file_exists(kEnableFile) || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
+    if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
     if (!file_exists(kLoader)) return 0;
     if (!dlopen(kLoader, RTLD_NOW | RTLD_GLOBAL)) {
         os_log_error(OS_LOG_DEFAULT, "Liter8: ElleKit load failed pid=%d %{public}s", getpid(), dlerror());
@@ -416,7 +413,7 @@ static void lhook_init(void) {
     (void)liter8_load_tweaks();
     char message[64];
     int length = build_message(message, (int)sizeof(message));
-    write_console(message, length);
+    if (file_exists(kDebugFile)) write_console(message, length);
     if (try_write_marker(message, length) || getpid() != 1) return;
     pthread_t thread;
     pthread_attr_t attr;

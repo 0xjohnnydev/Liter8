@@ -619,7 +619,7 @@ fi
 if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     say "launchd injection bootstrap"
     for required in payload/launchd.orig payload/launchd.hooked \
-                    payload/lhook.dylib payload/systemhook.dylib payload/sbextissue \
+                    payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl \
                     launchdhook/lhook.deny; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh injection"
     done
@@ -629,13 +629,14 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     hook_sha=$(shasum -a 256 payload/lhook.dylib | awk '{print $1}')
     systemhook_sha=$(shasum -a 256 payload/systemhook.dylib | awk '{print $1}')
     sbextissue_sha=$(shasum -a 256 payload/sbextissue | awk '{print $1}')
+    lhookctl_sha=$(shasum -a 256 payload/lhookctl | awk '{print $1}')
     [ "$stock_sha" = "$LAUNCHD_SHA" ] \
         || die "payload/launchd.orig does not match the selected firmware profile"
     python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked >/dev/null \
         || die "launchd payload byte-diff verification failed"
     codesign -v payload/launchd.hooked \
         || die "launchd payload code-slot verification failed"
-    for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue; do
+    for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl; do
         codesign -v "$binary" || die "$binary signature verification failed"
         [ -z "$("$LDID" -e "$binary")" ] \
             || die "$binary unexpectedly carries entitlements"
@@ -674,7 +675,7 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
         || die "could not make launchd backup executable"
     ok "exact stock backup preserved at /sbin/launchd.bak"
 
-    sh_dev 'mkdir -p /mnt1/usr/lib /mnt1/usr/local/bin /mnt2/jb/etc' \
+    sh_dev 'mkdir -p /mnt1/usr/lib /mnt1/usr/local/bin /mnt2/jb/etc /mnt2/jb/usr/bin' \
         || die "could not create injection directories"
     must_dev '
 if [ -f /mnt1/usr/lib/lhook ] && [ ! -f /mnt1/usr/lib/lhook.orig ]; then
@@ -695,11 +696,15 @@ echo DONE_OK
     put payload/lhook.dylib /mnt1/usr/lib/lhook.usbl8r-new
     put payload/systemhook.dylib /mnt1/usr/lib/systemhook.dylib.usbl8r-new
     put payload/sbextissue /mnt1/usr/local/bin/sbextissue.usbl8r-new
+    put payload/lhookctl /mnt2/jb/usr/bin/lhookctl.new
     put launchdhook/lhook.deny /mnt2/jb/etc/lhook.deny.new
     sh_dev 'cat /mnt1/sbin/launchd.usbl8r-new' > payload/.work/launchd.staged
     sh_dev 'cat /mnt1/usr/lib/lhook.usbl8r-new' > payload/.work/lhook.staged
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib.usbl8r-new' > payload/.work/systemhook.staged
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue.usbl8r-new' > payload/.work/sbextissue.staged
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl.new' > payload/.work/lhookctl.staged
+    [ "$(shasum -a 256 payload/.work/lhookctl.staged | awk '{print $1}')" = "$lhookctl_sha" ] \
+        || die "staged lhookctl hash mismatch; original is still active"
     [ "$(shasum -a 256 payload/.work/launchd.staged | awk '{print $1}')" = "$hooked_sha" ] \
         || die "staged launchd hash mismatch; original is still active"
     [ "$(shasum -a 256 payload/.work/lhook.staged | awk '{print $1}')" = "$hook_sha" ] \
@@ -712,6 +717,8 @@ echo DONE_OK
 chmod 0755 /mnt1/sbin/launchd.usbl8r-new /mnt1/usr/lib/lhook.usbl8r-new
 chmod 0755 /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/local/bin/sbextissue.usbl8r-new
 chmod 0644 /mnt2/jb/etc/lhook.deny.new
+chmod 0755 /mnt2/jb/usr/bin/lhookctl.new
+mv -f /mnt2/jb/usr/bin/lhookctl.new /mnt2/jb/usr/bin/lhookctl
 mv -f /mnt1/sbin/launchd.usbl8r-new /mnt1/sbin/launchd
 mv -f /mnt1/usr/lib/lhook.usbl8r-new /mnt1/usr/lib/lhook
 mv -f /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/lib/systemhook.dylib
@@ -728,6 +735,9 @@ echo DONE_OK
     sh_dev 'cat /mnt1/usr/lib/lhook' > payload/.work/lhook.readback
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib' > payload/.work/systemhook.readback
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue' > payload/.work/sbextissue.readback
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl' > payload/.work/lhookctl.readback
+    [ "$(shasum -a 256 payload/.work/lhookctl.readback | awk '{print $1}')" = "$lhookctl_sha" ] \
+        || die "lhookctl readback hash mismatch"
     [ "$(shasum -a 256 payload/.work/launchd.readback | awk '{print $1}')" = "$hooked_sha" ] \
         || die "launchd readback hash mismatch"
     [ "$(shasum -a 256 payload/.work/launchd.bak.readback | awk '{print $1}')" = "$stock_sha" ] \
