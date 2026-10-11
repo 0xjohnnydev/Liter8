@@ -32,6 +32,12 @@ PASSTHROUGH_IMG4 = [
 
 TRUST_CACHES = {"StaticTrustCache", "RestoreTrustCache"}
 
+# The only firmware a supported board may legitimately lack. j171aap is A12/PPL
+# with no SPTM, so it has neither SPTM nor its PMP and WCH companions. Anything
+# outside this set and the trust caches is common to every board we boot, and a
+# selected identity that omits one is a manifest we do not understand.
+BOARD_OPTIONAL = {"Ap,SecurePageTableMonitor", "PMP", "WCHFirmwareUpdater"}
+
 
 def selected_passthrough(
     components: dict[str, str], mode: str, *, static_trust_cache: bool = False
@@ -41,12 +47,21 @@ def selected_passthrough(
     Boards differ: j171aap has no SPTM, PMP or WCH. Exactly one trust cache
     is sent. n104 boots both modes with RestoreTrustCache; a profile whose
     normal boot needs the System-volume cache sets static_trust_cache.
+
+    Everything else is mandatory. Filtering the list by what the identity
+    happens to contain would drop a common image silently, and validate_boot_set
+    derives its required filenames from this same result, so nothing downstream
+    would notice before the chain reached the device.
     """
     trust_cache = (
         "StaticTrustCache" if mode == "normal" and static_trust_cache
         else "RestoreTrustCache"
     )
-    missing = sorted({"RestoreLogo", "SEP", trust_cache} - components.keys())
+    required = {
+        entry[0] for entry in PASSTHROUGH_IMG4
+        if entry[0] not in BOARD_OPTIONAL and entry[0] not in TRUST_CACHES
+    } | {trust_cache}
+    missing = sorted(required - components.keys())
     if missing:
         raise WorkflowError(f"BuildManifest is missing required boot firmware: {', '.join(missing)}")
     return [

@@ -272,7 +272,11 @@ public struct MobileActivationDResolver: Sendable {
         ]
     }
 
-    private func findStateLoadCandidates(
+    /// Internal rather than private so the bounds behaviour can be tested on a
+    /// plain buffer. The public entry point needs a Mach-O carrying the real
+    /// Objective-C method, which no synthetic input can reasonably provide, and
+    /// the fixture binaries that do are private and skip when absent.
+    func findStateLoadCandidates(
         in image: BinaryImage,
         methodOffset: UInt64
     ) throws -> [StateLoadCandidate] {
@@ -301,7 +305,13 @@ public struct MobileActivationDResolver: Sendable {
 
             if !foundLegacy,
                let fallback = ARM64.testBranchTarget(instruction: branch, at: gate),
-               fallback >= methodOffset, fallback + 0x38 <= end,
+               // Subtract rather than add, for the same reason as the iBEC leaf
+               // branch. testBranchTarget returns the bit pattern of a signed
+               // result, so a branch resolving below zero wraps to just under
+               // UInt64.max, clears `>= methodOffset`, and `fallback + 0x38`
+               // then overflows and traps instead of failing the match. Both
+               // subtractions here are ordered so neither can underflow.
+               fallback >= methodOffset, fallback <= end, end - fallback >= 0x38,
                try image.readUInt32(at: fallback) & 0x9F00_001F == 0x9000_0008,
                try image.readUInt32(at: fallback + 4) & 0xFFC0_03FF == 0x9100_0108,
                try image.readUInt32(at: fallback + 8) == 0xF940_0108,
@@ -367,7 +377,9 @@ public struct MobileActivationDResolver: Sendable {
     }
 }
 
-private struct StateLoadCandidate {
+/// Internal, not private, only so findStateLoadCandidates can be called from a
+/// test. Nothing outside this file constructs or inspects one.
+struct StateLoadCandidate {
     enum Kind { case legacy, dictionaryFallback }
     let gate: UInt64
     let load: UInt64
