@@ -106,6 +106,29 @@ TROLLSTORE_DEB="com.opa334.trollstorehelper27_${TROLLSTORE_VER}_iphoneos-arm64.d
 TROLLSTORE_URL="https://github.com/Xplo8E/TrollStore27/releases/download/v2.1.1-ios27.2/${TROLLSTORE_DEB}"
 TROLLSTORE_SHA=e8ea96c560268430fd437aa50cb9a97b774ee70c242a34fef12b38ef8b099c0d
 
+# ElleKit, for its tweak injector only. lhook already dlopens
+# /var/jb/usr/lib/TweakLoader.dylib, which is ElleKit's own symlink to
+# libinjector.dylib, so its pspawn hook and launchd-side loader are neither
+# needed nor deployed. ElleKit's postinst takes the same view: where a
+# jailbreak's own hook already loads TweakLoader.dylib it installs the files
+# and runs nothing.
+#
+# That is also why this is deployed from the host rather than apt-installed on
+# the device. Our bootstrap marker is /var/jb/.installed_usbl8r, which that
+# postinst does not recognise, so apt would fall through to its default branch
+# and start ElleKit's own injection path alongside lhook.
+#
+# Pinned from ellekit.space, the only place built binaries exist: the GitHub
+# repo publishes no releases, and its newest tag (v1.1.3) is six commits behind
+# the main branch 1.2 was built from. Across those six commits
+# injector/injector.c changes by one copyright line, so the loader is the same
+# code either way; the one real change disables exception-handler hooking on
+# iOS 17.4 and later, which is the correct behaviour here.
+ELLEKIT_VER=1.2
+ELLEKIT_DEB="ellekit_${ELLEKIT_VER}_iphoneos-arm64.deb"   # arm64 == rootless here
+ELLEKIT_URL="https://ellekit.space/pool/${ELLEKIT_DEB}"
+ELLEKIT_SHA=e21dc91bdc1be193dc915daecfff45256239b4fe583a36861e662ab1f43906dc
+
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 ok()   { printf '    [+] %s\n' "$1"; }
 skip() { printf '    [=] %s\n' "$1"; }
@@ -117,7 +140,7 @@ die()  { printf '    [!] %s\n' "$1"; exit 1; }
     || die "ldid at $LDID cannot run on this host; brew install ldid-procursus"
 mkdir -p "$OUT" "$WORK"
 
-WANT="${*:-sileo helpers cache injection pairing cellular}"
+WANT="${*:-sileo helpers cache injection tweaks pairing cellular}"
 wants() { case " $WANT " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # Assert the boot-critical profile values only for the components that use them.
@@ -283,6 +306,82 @@ if wants injection; then
     cp "$WORK/launchd.orig" "$OUT/launchd.orig"
     cp "$WORK/launchd.hooked" "$OUT/launchd.hooked"
     ok "launchd, lhook, icon sandbox payload and token issuer ready"
+fi
+
+# ------------------------------------------------------------------- tweaks
+# The loader lhook dlopens, plus the tweaks that go in TweakInject. Without
+# this step /var/jb/usr/lib/TweakLoader.dylib is absent, lhook's own gate sees
+# no loader, and a built tweak has nowhere to be loaded from.
+if wants tweaks; then
+    say "ElleKit $ELLEKIT_VER tweak injector"
+    deb="$WORK/$ELLEKIT_DEB"
+    [ -f "$deb" ] || curl -sL --fail -o "$deb" "$ELLEKIT_URL" \
+        || die "download failed: $ELLEKIT_URL"
+    got=$(shasum -a 256 "$deb" | awk '{print $1}')
+    [ "$got" = "$ELLEKIT_SHA" ] \
+        || die "$ELLEKIT_DEB sha256 mismatch: got $got expected $ELLEKIT_SHA"
+
+    rm -rf "$WORK/ellekit" && mkdir -p "$WORK/ellekit"
+    ( cd "$WORK/ellekit" && ar x "$deb" \
+        && xz -dc control.tar.xz | tar xf - && xz -dc data.tar.xz | tar xf - ) \
+        || die "could not extract $ELLEKIT_DEB"
+    grep -q '^Package: ellekit$' "$WORK/ellekit/control" \
+        || die "unexpected package name in $ELLEKIT_DEB"
+    grep -q "^Version: ${ELLEKIT_VER}\$" "$WORK/ellekit/control" \
+        || die "unexpected version in $ELLEKIT_DEB"
+
+    EK="$WORK/ellekit/var/jb/usr/lib"
+    [ -f "$EK/ellekit/libinjector.dylib" ] \
+        || die "$ELLEKIT_DEB has no ellekit/libinjector.dylib; layout changed?"
+    # The loader is dlopened into arm64e processes, so an arm64-only build would
+    # fail exactly there and nowhere a host check would notice.
+    for lib in ellekit/libinjector.dylib libellekit.dylib ellekit/MobileSafety.dylib; do
+        archs=$(lipo -archs "$EK/$lib")
+        case " $archs " in *" arm64 "*)  ;; *) die "$lib is missing arm64"  ;; esac
+        case " $archs " in *" arm64e "*) ;; *) die "$lib is missing arm64e" ;; esac
+        [ -z "$("$LDID" -e "$EK/$lib")" ] \
+            || die "$lib unexpectedly carries entitlements"
+    done
+    # lhook only dlopens the loader and never calls into it, so everything the
+    # injector does has to happen from a module initialiser. __init_offsets is
+    # the chained-fixups form of __mod_init_func; accept either.
+    otool -l "$EK/ellekit/libinjector.dylib" \
+        | grep -qE '__init_offsets|__mod_init_func' \
+        || die "libinjector.dylib has no module initialiser; a bare dlopen would do nothing"
+    ok "$ELLEKIT_DEB hash-verified, both slices, no entitlements, initialiser present"
+
+    rm -rf "$OUT/tweaks" && mkdir -p "$OUT/tweaks/TweakInject"
+    cp "$EK/ellekit/libinjector.dylib" "$OUT/tweaks/libinjector.dylib"
+    # Named by libinjector itself, so it is staged rather than left to resolve
+    # to a path that does not exist.
+    cp "$EK/ellekit/MobileSafety.dylib" "$OUT/tweaks/MobileSafety.dylib"
+    # Only needed by tweaks that link libsubstrate, libhooker or CydiaSubstrate.
+    # Ours do not, but anything installed from a repo later will.
+    cp "$EK/libellekit.dylib" "$OUT/tweaks/libellekit.dylib"
+
+    # ElleKit ships all three at flags=0x0, the same "no signature" state Sileo
+    # ships in and for the same reason: it expects a jailbreak that grants trust
+    # via a trust cache and an amfid patch. This device has neither, so they are
+    # re-signed ad-hoc like every other payload here. Their own identifiers are
+    # already their file names, so ldid's default preserves them.
+    for lib in libinjector.dylib libellekit.dylib MobileSafety.dylib; do
+        "$LDID" -S -Cadhoc "$OUT/tweaks/$lib" || die "could not re-sign $lib"
+        codesign -dv "$OUT/tweaks/$lib" 2>&1 | grep -q 'flags=0x2(adhoc)' \
+            || die "$lib is still not ad-hoc signed"
+        [ -z "$("$LDID" -e "$OUT/tweaks/$lib")" ] \
+            || die "$lib gained entitlements while being re-signed"
+        codesign -v "$OUT/tweaks/$lib" || die "$lib code-slot verification failed"
+    done
+    ok "loader, hooking library and safe-mode payload staged, re-signed ad-hoc"
+
+    # Nothing built l8localauth before this: commits that added it and made it
+    # an ElleKit tweak never gave it a build or deployment path.
+    ( cd localauthfix && ./build.sh ) || die "l8localauth build failed"
+    cp localauthfix/l8localauth.dylib "$OUT/tweaks/TweakInject/l8localauth.dylib"
+    cp localauthfix/l8localauth.plist "$OUT/tweaks/TweakInject/l8localauth.plist"
+    plutil -lint "$OUT/tweaks/TweakInject/l8localauth.plist" >/dev/null \
+        || die "l8localauth.plist does not lint"
+    ok "l8localauth.dylib and its filter plist staged"
 fi
 
 # ------------------------------------------------------------------ pairing
@@ -508,6 +607,8 @@ for p in "$OUT/Sileo.app/Sileo" "$OUT/Sileo.app/giveMeRoot" \
          "$OUT/systemhook.dylib" "$OUT/sbextissue" "$OUT/l8pair.dylib" \
          "$OUT/l8remotepairing.dylib" "$OUT/l8coreauth.dylib" \
          "$OUT/l8fdr.dylib" "$OUT/uicache" \
+         "$OUT/tweaks/libinjector.dylib" "$OUT/tweaks/libellekit.dylib" \
+         "$OUT/tweaks/TweakInject/l8localauth.dylib" \
          photodiag/photodiag spawnprobe/personaalloc appreg/appreg \
          photoforce/pfruntimeprobe photoforce/pfwatch ddiwatch/ddiwatch \
          "$OUT/debugserver"; do
