@@ -13,7 +13,7 @@ SDK="${LITER8_IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
 
 # Self-test on the host first: pure translation logic, no device needed.
 if command -v clang >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
-    clang -DLITER8_LOCALAUTH_TEST -framework Foundation \
+    xcrun clang -DLITER8_LOCALAUTH_TEST -framework Foundation \
         -framework LocalAuthentication l8localauth.m -o .l8localauth-test
     ./.l8localauth-test
     rm -f .l8localauth-test
@@ -28,7 +28,7 @@ xcrun clang -isysroot "$SDK" -arch arm64 -arch arm64e \
 # would load it into all of them. The hook installs when LAContext appears.
 otool -L l8localauth.dylib | grep -q LocalAuthentication \
     && { echo "[!] l8localauth links LocalAuthentication" >&2; exit 1; }
-"$LDID" -Icom.liter8.l8localauth -Cadhoc l8localauth.dylib
+"$LDID" -S -Icom.liter8.l8localauth -Cadhoc l8localauth.dylib
 codesign -d --entitlements :- l8localauth.dylib 2>/dev/null | grep -q get-task-allow \
     && { echo "[!] l8localauth carries get-task-allow, AMFI will kill it"; exit 1; }
 echo "[+] l8localauth.dylib  $(wc -c < l8localauth.dylib | tr -d ' ') bytes"
