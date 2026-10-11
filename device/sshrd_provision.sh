@@ -765,12 +765,15 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     say "tweak loader and TweakInject payloads"
     for required in payload/tweaks/libinjector.dylib payload/tweaks/MobileSafety.dylib \
                     payload/tweaks/TweakInject/l8localauth.dylib \
-                    payload/tweaks/TweakInject/l8localauth.plist; do
+                    payload/tweaks/TweakInject/l8localauth.plist \
+                    payload/tweaks/TweakInject/l8persona.dylib \
+                    payload/tweaks/TweakInject/l8persona.plist; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh tweaks"
     done
 
     for binary in payload/tweaks/libinjector.dylib payload/tweaks/MobileSafety.dylib \
-                  payload/tweaks/TweakInject/l8localauth.dylib; do
+                  payload/tweaks/TweakInject/l8localauth.dylib \
+                  payload/tweaks/TweakInject/l8persona.dylib; do
         codesign -v "$binary" || die "$binary code-slot verification failed"
         # ElleKit ships its dylibs at flags=0x0, which needs a trust cache this
         # device does not have. fetch_payloads.sh re-signs them; assert it ran.
@@ -782,9 +785,10 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
         case " $archs " in *" arm64 "*)  ;; *) die "$binary is missing arm64"  ;; esac
         case " $archs " in *" arm64e "*) ;; *) die "$binary is missing arm64e" ;; esac
     done
-    plutil -lint payload/tweaks/TweakInject/l8localauth.plist >/dev/null \
-        || die "l8localauth.plist does not lint"
-    ok "host payload verified: ad-hoc, both slices, no entitlements"
+    for filter in payload/tweaks/TweakInject/*.plist; do
+        plutil -lint "$filter" >/dev/null || die "$filter does not lint"
+    done
+    ok "host payload verified: ad-hoc, both slices, no entitlements, filters lint"
 
     mkdir -p payload/.work
     sh_dev 'mkdir -p /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject' >/dev/null \
@@ -799,7 +803,9 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755 \
         payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755 \
         payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755 \
-        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644
+        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644 \
+        payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755 \
+        payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist:0644
     do
         src=${entry%%:*}
         rest=${entry#*:}
@@ -820,14 +826,17 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
 
     # Same policy the injection step applies to .lhook_enabled: a provision
     # leaves the device inert, so an armed marker from a previous run is set
-    # aside rather than carried into a boot nobody asked to arm.
+    # aside rather than carried into a boot nobody asked to arm. Both tweaks
+    # read their own marker, so both are set aside.
     must_dev '
-if [ -e /mnt2/jb/.liter8-localauth ]; then
-    mv -f /mnt2/jb/.liter8-localauth /mnt2/jb/.liter8-localauth.pre-provision
-fi
+for m in .liter8-localauth .liter8-persona; do
+    if [ -e "/mnt2/jb/$m" ]; then
+        mv -f "/mnt2/jb/$m" "/mnt2/jb/$m.pre-provision"
+    fi
+done
 echo DONE_OK
-' "could not set aside an existing l8localauth marker"
-    ok "loader in place; injection still needs lhookctl enable, l8localauth its marker"
+' "could not set aside an existing tweak marker"
+    ok "loader in place; injection needs lhookctl enable, each tweak needs its marker"
 fi
 
 # ------------------------------------------------------------------- cache
@@ -1356,14 +1365,18 @@ note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo ENABLE
 if [ -f payload/tweaks/libinjector.dylib ] && \
    [ -f payload/tweaks/MobileSafety.dylib ] && \
    [ -f payload/tweaks/TweakInject/l8localauth.dylib ] && \
-   [ -f payload/tweaks/TweakInject/l8localauth.plist ]; then
+   [ -f payload/tweaks/TweakInject/l8localauth.plist ] && \
+   [ -f payload/tweaks/TweakInject/l8persona.dylib ] && \
+   [ -f payload/tweaks/TweakInject/l8persona.plist ]; then
     tweak_state=OK
     for entry in \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib \
         payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib \
         payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib \
-        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist
+        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist \
+        payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib \
+        payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist
     do
         v_src=${entry%%:*}
         v_dst=${entry#*:}
@@ -1380,6 +1393,7 @@ else
 fi
 note "tweak loader set" "$tweak_state"
 note "l8localauth first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-localauth ] && echo ENABLED || echo dormant' | tr -d '\r')"
+note "l8persona first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-persona ] && echo ENABLED || echo dormant' | tr -d '\r')"
 
 # The cache is the one file that can be the right SIZE and still be wrong, and
 # it is what provides SSH on a normal boot. Pull it back and check its contents.

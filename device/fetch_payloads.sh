@@ -374,14 +374,23 @@ if wants tweaks; then
     done
     ok "loader, hooking library and safe-mode payload staged, re-signed ad-hoc"
 
-    # Nothing built l8localauth before this: commits that added it and made it
-    # an ElleKit tweak never gave it a build or deployment path.
+    # Nothing built either tweak before this: the commits that added them and
+    # made them ElleKit tweaks never gave them a build or deployment path.
     ( cd localauthfix && ./build.sh ) || die "l8localauth build failed"
-    cp localauthfix/l8localauth.dylib "$OUT/tweaks/TweakInject/l8localauth.dylib"
-    cp localauthfix/l8localauth.plist "$OUT/tweaks/TweakInject/l8localauth.plist"
-    plutil -lint "$OUT/tweaks/TweakInject/l8localauth.plist" >/dev/null \
-        || die "l8localauth.plist does not lint"
-    ok "l8localauth.dylib and its filter plist staged"
+    ( cd personafix && ./build.sh ) || die "l8persona build failed"
+    for tweak in localauthfix/l8localauth personafix/l8persona; do
+        name=$(basename "$tweak")
+        cp "$tweak.dylib" "$OUT/tweaks/TweakInject/$name.dylib"
+        cp "$tweak.plist" "$OUT/tweaks/TweakInject/$name.plist"
+        plutil -lint "$OUT/tweaks/TweakInject/$name.plist" >/dev/null \
+            || die "$name.plist does not lint"
+        # Both are ElleKit tweaks loaded by filter, so the install name has to
+        # be the TweakInject path and not wherever the build ran.
+        otool -D "$OUT/tweaks/TweakInject/$name.dylib" \
+            | grep -qx "/var/jb/usr/lib/TweakInject/$name.dylib" \
+            || die "$name.dylib install name is not its TweakInject path"
+        ok "$name.dylib and its filter plist staged"
+    done
 fi
 
 # ------------------------------------------------------------------ pairing
@@ -609,6 +618,7 @@ for p in "$OUT/Sileo.app/Sileo" "$OUT/Sileo.app/giveMeRoot" \
          "$OUT/l8fdr.dylib" "$OUT/uicache" \
          "$OUT/tweaks/libinjector.dylib" "$OUT/tweaks/libellekit.dylib" \
          "$OUT/tweaks/TweakInject/l8localauth.dylib" \
+         "$OUT/tweaks/TweakInject/l8persona.dylib" \
          photodiag/photodiag spawnprobe/personaalloc appreg/appreg \
          photoforce/pfruntimeprobe photoforce/pfwatch ddiwatch/ddiwatch \
          "$OUT/debugserver"; do
