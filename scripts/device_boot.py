@@ -36,12 +36,14 @@ FIRMWARE_SEQUENCE = [
 
 
 def selected_firmware_sequence(
-    components: dict[str, str], mode: str, *, static_trust_cache: bool = False
+    components: dict[str, str], mode: str, *, static_trust_cache: bool = False,
+    optional_firmware: frozenset[str] = frozenset()
 ) -> list[tuple[str, str, int]]:
-    """Keep the established upload order, omitting firmware absent on this board."""
+    """Keep the established upload order, omitting firmware the profile calls optional."""
     available = {
         name for _, name, _ in
-        selected_passthrough(components, mode, static_trust_cache=static_trust_cache)
+        selected_passthrough(components, mode, static_trust_cache=static_trust_cache,
+                             optional_firmware=optional_firmware)
     }
     if has_txm(components, mode):
         available.add("TXM.img4")
@@ -53,6 +55,7 @@ def firmware_sequence(context: Context, mode: str) -> list[tuple[str, str, int]]
     return selected_firmware_sequence(
         context.components, mode,
         static_trust_cache=context.normal_boot_static_trust_cache,
+        optional_firmware=context.optional_passthrough_firmware,
     )
 
 
