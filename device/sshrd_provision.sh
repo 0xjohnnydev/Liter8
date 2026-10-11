@@ -780,13 +780,46 @@ fi
 # lhookctl enable for the current boot session, and l8localauth stays dormant
 # until the root-owned /var/jb/.liter8-localauth marker exists. Two separate
 # switches, neither of which this step touches.
-if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
+#
+# local:device:mode, declared here rather than inside the step because the
+# verification at the bottom of this script reads the same table. Two copies
+# drifted: one listed the mode and the other did not check it.
+#
+# libinjector lands twice: at the canonical path it names internally, and at the
+# loader path lhook dlopens. Two copies rather than a symlink because nothing
+# else in these scripts creates one, so ln is not a tool the ramdisk is known to
+# have, and a copy is hash-verifiable.
+TWEAK_SET="
+payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755
+payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755
+payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755
+payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755
+payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644
+payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755
+payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist:0644
+"
+
+# How much of the set the host built, decided once so this step and the
+# verification at the bottom cannot disagree about what "nothing built" means.
+TWEAK_PAYLOAD=complete
+tweak_any=0
+for entry in $TWEAK_SET; do
+    if [ -f "${entry%%:*}" ]; then tweak_any=1; else TWEAK_PAYLOAD=partial; fi
+done
+[ "$tweak_any" = 1 ] || TWEAK_PAYLOAD=none
+
+# Nothing built, rather than a bad build: fetch_payloads.sh skips the whole set
+# when ellekit.space is unreachable instead of ending a provision before
+# Dropbear is installed, so this skips to match. A set that is partly there is
+# a different thing and still stops the run below.
+if wants tweaks && [ "$CHECK_ONLY" = 0 ] && [ "$TWEAK_PAYLOAD" = none ]; then
     say "tweak loader and TweakInject payloads"
-    for required in payload/tweaks/libinjector.dylib payload/tweaks/MobileSafety.dylib \
-                    payload/tweaks/TweakInject/l8localauth.dylib \
-                    payload/tweaks/TweakInject/l8localauth.plist \
-                    payload/tweaks/TweakInject/l8persona.dylib \
-                    payload/tweaks/TweakInject/l8persona.plist; do
+    skip "payload/tweaks absent; run ./fetch_payloads.sh tweaks with network"
+    skip "injection will find no loader until then; nothing else is affected"
+elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
+    say "tweak loader and TweakInject payloads"
+    for entry in $TWEAK_SET; do
+        required=${entry%%:*}
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh tweaks"
     done
 
@@ -813,14 +846,9 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     sh_dev 'mkdir -p /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject' >/dev/null \
         || die "could not create the tweak directories"
 
-    # local:device:mode. libinjector lands twice: at the canonical path it names
-    # internally, and at the loader path lhook dlopens. Two copies rather than a
-    # symlink because nothing else in these scripts creates one, so ln is not a
-    # tool the ramdisk is known to have, and a copy is hash-verifiable.
-    #
-    # This is deliberately the minimum that makes injection work with no network
-    # and no dpkg: the injector, the safe-mode payload it names, and the two
-    # tweaks. Both tweaks are Objective-C method swizzles linking only
+    # TWEAK_SET above is deliberately the minimum that makes injection work with
+    # no network and no dpkg: the injector, the safe-mode payload it names, and
+    # the two tweaks. Both tweaks are Objective-C method swizzles linking only
     # Foundation, so none of it needs the hooking library.
     #
     # The hooking library, the substrate compatibility names and the dpkg record
@@ -828,15 +856,7 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     # finalize.sh installs ElleKit's own deb on a booted device. They cannot come
     # from here: the names have to be symlinks and ln is not a tool the ramdisk
     # is known to have, and dpkg needs a booted bootstrap.
-    for entry in \
-        payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755 \
-        payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755 \
-        payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755 \
-        payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755 \
-        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644 \
-        payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755 \
-        payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist:0644
-    do
+    for entry in $TWEAK_SET; do
         src=${entry%%:*}
         rest=${entry#*:}
         dst=${rest%:*}
@@ -1117,6 +1137,56 @@ note() {
         ""|*ABSENT*|*MISSING*|*LOST*|*MISMATCH*|*UNREADABLE*|ENABLED) FAIL=1 ;;
     esac
 }
+
+# Decide a presence marker exactly as the code that reads it decides: a regular
+# file, root owned, and not group or other writable. l8fdr.c:bypass_enabled(),
+# l8localauth.m:marker_enabled() and l8persona.m:marker_enabled() all test that,
+# so testing only for existence reported markers live that every consumer then
+# rejects, which leaves the feature off while provisioning calls it on.
+#
+# Parsed out of `ls -ln` rather than stat(1), whose format flag is not portable:
+# this ramdisk carries GNU coreutils, where `stat -f` asks about the filesystem
+# instead of the file and the owner test silently reads as a failure. awk is not
+# present either, so the mode string is matched with shell globs. Fields are
+# mode, links, uid; mode positions 6 and 9 are the group and other write bits.
+#
+# Prints MISSING, OK, or BAD with the reason.
+marker_state() {
+    sh_dev "M='$1'"'
+if [ ! -f "$M" ] || [ -L "$M" ]; then echo MISSING; exit 0; fi
+set -- $(ls -ln "$M")
+case "$1" in
+    ?????w*)    echo "BAD (group writable)"; exit 0 ;;
+    ????????w*) echo "BAD (other writable)"; exit 0 ;;
+esac
+[ "$3" = 0 ] && echo OK || echo "BAD (owner uid $3, not root)"' | tr -d '\r'
+}
+
+# The same verdict in the vocabulary the two tweak markers report in. A
+# provision sets both aside, so one that is live here is an anomaly and ENABLED
+# fails the run. A malformed one is not an anomaly: the tweak rejects it, so it
+# reports dormant with the reason instead of failing on a device that is in fact
+# inert.
+tweak_marker() {
+    state=$(marker_state "$1")
+    case "$state" in
+        MISSING) echo dormant ;;
+        OK)      echo ENABLED ;;
+        *)       echo "dormant, $state" ;;
+    esac
+}
+
+# `ls -ln` is the only mode reader this ramdisk can be relied on for, so the
+# octal modes in TWEAK_SET are matched against their symbolic form. Listed
+# rather than computed, and fatal on anything unlisted, so adding a mode to the
+# table cannot quietly turn its verification into a no-op.
+symbolic_mode() {
+    case "$1" in
+        0755) echo '-rwxr-xr-x' ;;
+        0644) echo '-rw-r--r--' ;;
+        *)    die "no symbolic form recorded for mode $1" ;;
+    esac
+}
 mkdir -p payload/.work
 
 note "/Applications bundles"  "$(sh_dev 'ls /mnt1/Applications | wc -l' | tr -d ' \r')"
@@ -1257,25 +1327,7 @@ fi
 note "l8fdr dylib" "$fdr_library_state"
 # Reported separately from the dylib: with the dylib present and the marker gone the
 # bypass is deliberately inert, which is a recovery state rather than a broken one.
-# Checked exactly as l8fdr.c:bypass_enabled() checks it: a regular file, root
-# owned, and not group or other writable. Testing only for existence reported OK
-# for markers the dylib then rejects, which leaves FDR stock and the modem
-# uncalibrated while provisioning calls the boot safe.
-#
-# Parsed out of `ls -ln` rather than stat(1), whose format flag is not portable:
-# this ramdisk carries GNU coreutils, where `stat -f` asks about the filesystem
-# instead of the file and the owner test silently reads as a failure. awk is not
-# present either, so the mode string is matched with shell globs. Fields are
-# mode, links, uid; mode positions 6 and 9 are the group and other write bits.
-note "FDR sik bypass marker" "$(sh_dev '
-M=/mnt1/usr/lib/.liter8-fdr-sik-bypass
-if [ ! -f "$M" ] || [ -L "$M" ]; then echo MISSING; exit 0; fi
-set -- $(ls -ln "$M")
-case "$1" in
-    ?????w*)    echo "BAD (group writable)"; exit 0 ;;
-    ????????w*) echo "BAD (other writable)"; exit 0 ;;
-esac
-[ "$3" = 0 ] && echo OK || echo "BAD (owner uid $3, not root)"' | tr -d '\r')"
+note "FDR sik bypass marker" "$(marker_state /mnt1/usr/lib/.liter8-fdr-sik-bypass)"
 note "pairing fallback marker" "$(sh_dev '[ -f /mnt2/root/Library/Lockdown/.liter8-pairing-fallback ] && [ ! -L /mnt2/root/Library/Lockdown/.liter8-pairing-fallback ] && echo OK || echo MISSING' | tr -d '\r')"
 note "RemoteXPC fallback marker" "$(sh_dev '[ -f /mnt1/usr/lib/.liter8-remotepairing-fallback ] && [ ! -L /mnt1/usr/lib/.liter8-remotepairing-fallback ] && echo OK || echo MISSING' | tr -d '\r')"
 note "pairing fallback key" "$(sh_dev '[ -s /mnt2/root/Library/Lockdown/liter8_pairing_key.der ] && echo generated || echo pending' | tr -d '\r')"
@@ -1415,24 +1467,21 @@ note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo "stale
 # including the second copy of the loader at the path lhook dlopens: that one is
 # the whole point, and a missing TweakLoader.dylib is exactly the state where
 # injection silently does nothing.
-if [ -f payload/tweaks/libinjector.dylib ] && \
-   [ -f payload/tweaks/MobileSafety.dylib ] && \
-   [ -f payload/tweaks/TweakInject/l8localauth.dylib ] && \
-   [ -f payload/tweaks/TweakInject/l8localauth.plist ] && \
-   [ -f payload/tweaks/TweakInject/l8persona.dylib ] && \
-   [ -f payload/tweaks/TweakInject/l8persona.plist ]; then
+if [ "$TWEAK_PAYLOAD" = none ]; then
+    # Not a failure. fetch_payloads.sh skips the whole set when ellekit.space is
+    # unreachable and the provisioning step skips with it, so an operator who
+    # ran without network has no tweak stack by design. Nothing on the device
+    # needs one to boot, and calling this MISSING failed a run that is fine.
+    tweak_state="not built"
+elif [ "$TWEAK_PAYLOAD" = partial ]; then
+    tweak_state="MISSING part of the host tweak payload"
+else
     tweak_state=OK
-    for entry in \
-        payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib \
-        payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib \
-        payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib \
-        payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib \
-        payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist \
-        payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib \
-        payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist
-    do
+    for entry in $TWEAK_SET; do
         v_src=${entry%%:*}
-        v_dst=${entry#*:}
+        v_rest=${entry#*:}
+        v_dst=${v_rest%:*}
+        v_mode=${v_rest##*:}
         sh_dev "cat '$v_dst'" > payload/.work/verify.tweak 2>/dev/null || true
         if [ ! -s payload/.work/verify.tweak ] || \
            [ "$(shasum -a 256 payload/.work/verify.tweak | awk '{print $1}')" \
@@ -1440,19 +1489,32 @@ if [ -f payload/tweaks/libinjector.dylib ] && \
             tweak_state="MISMATCH /var/jb${v_dst#/mnt2/jb}"
             break
         fi
+        # Content is not enough. These reads run as root over ssh, so a cat of a
+        # mode-000 loader still returns the right bytes, while dlopen from every
+        # ordinary process fails. Checking only the hash called that device OK.
+        #
+        # Compared symbolically because `ls -ln` is what this ramdisk can be
+        # relied on to produce; see marker_state above for why not stat(1). GNU
+        # ls appends '.' or '+' for an ACL, so a trailing one is dropped.
+        v_ls=$(sh_dev "ls -ln '$v_dst'" | tr -d '\r')
+        v_got_mode=$(printf '%s\n' "$v_ls" | awk '{print $1}')
+        v_got_mode=${v_got_mode%[.+]}
+        v_got_uid=$(printf '%s\n' "$v_ls" | awk '{print $3}')
+        if [ "$v_got_mode" != "$(symbolic_mode "$v_mode")" ] || [ "$v_got_uid" != 0 ]; then
+            tweak_state="MISMATCH /var/jb${v_dst#/mnt2/jb} ($v_got_mode uid $v_got_uid)"
+            break
+        fi
     done
-else
-    tweak_state=MISSING
 fi
 note "tweak loader set" "$tweak_state"
 # ENABLED is a failure for these two but not for .lhook_enabled above, and the
 # difference is real rather than an oversight. The injection marker is session
 # bound: it carries a boot-session UUID the guard compares, so a leftover one is
-# inert. These two are plain existence markers with nothing to compare, so a
-# leftover one is live on the next boot. Nothing neutralises them, which is why
-# a provision sets them aside and why finding one here is a genuine anomaly.
-note "l8localauth first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-localauth ] && echo ENABLED || echo dormant' | tr -d '\r')"
-note "l8persona first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-persona ] && echo ENABLED || echo dormant' | tr -d '\r')"
+# inert. These two have no session to compare, so a well-formed leftover is live
+# on the next boot. Nothing neutralises them, which is why a provision sets them
+# aside and why finding one here is a genuine anomaly.
+note "l8localauth first boot" "$(tweak_marker /mnt2/jb/.liter8-localauth)"
+note "l8persona first boot" "$(tweak_marker /mnt2/jb/.liter8-persona)"
 
 # The cache is the one file that can be the right SIZE and still be wrong, and
 # it is what provides SSH on a normal boot. Pull it back and check its contents.
