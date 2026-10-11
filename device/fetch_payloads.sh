@@ -135,6 +135,18 @@ ok()   { printf '    [+] %s\n' "$1"; }
 skip() { printf '    [=] %s\n' "$1"; }
 die()  { printf '    [!] %s\n' "$1"; exit 1; }
 
+# Download to a temporary name and rename only on success, so a cached file is
+# only ever a complete one. `curl -o` writes in place, and a transfer that drops
+# part way leaves the bytes it got: measured 49 KB of the 331 KB ElleKit deb
+# against a 2s timeout. The next run reads that as a cache hit and dies on the
+# digest instead, with nothing in the message saying to delete it.
+fetch_cached() {
+    [ -f "$1" ] && return 0
+    curl -sL --fail -o "$1.part" "$2" && mv -f "$1.part" "$1" && return 0
+    rm -f "$1.part"
+    return 1
+}
+
 # -x passes for an arm64 binary on an Intel Mac, so check that it runs and
 # identifies itself. ldid -v exits non-zero even when it works.
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" \
@@ -161,7 +173,7 @@ fi
 if wants sileo; then
     say "Sileo $SILEO_VER"
     deb="$WORK/$SILEO_DEB"
-    [ -f "$deb" ] || curl -sL --fail -o "$deb" "$SILEO_URL" || die "download failed: $SILEO_URL"
+    fetch_cached "$deb" "$SILEO_URL" || die "download failed: $SILEO_URL"
     got=$(shasum -a 256 "$deb" | awk '{print $1}')
     [ "$got" = "$SILEO_SHA" ] || die "sha256 mismatch: got $got expected $SILEO_SHA"
     ok "downloaded and hash-verified"
@@ -333,11 +345,26 @@ fi
 # The loader lhook dlopens, plus the tweaks that go in TweakInject. Without
 # this step /var/jb/usr/lib/TweakLoader.dylib is absent, lhook's own gate sees
 # no loader, and a built tweak has nowhere to be loaded from.
+#
+# Unreachable upstream skips the step instead of ending the run. This is the
+# only member of the default set whose download is not boot-critical: the tweak
+# stack is Data-volume content and nothing in the boot path loads it. Dying here
+# would abort `fw provision` before install_dropbear.sh, so an ellekit.space
+# outage would cost the device its SSH channel over an optional feature.
+# sshrd_provision.sh skips its tweaks step to match and reports the set as not
+# built. The deb is cached in payload/.work, so only a first run needs network.
+EK_FETCHED=0
 if wants tweaks; then
     say "ElleKit $ELLEKIT_VER tweak injector"
     deb="$WORK/$ELLEKIT_DEB"
-    [ -f "$deb" ] || curl -sL --fail -o "$deb" "$ELLEKIT_URL" \
-        || die "download failed: $ELLEKIT_URL"
+    if fetch_cached "$deb" "$ELLEKIT_URL"; then
+        EK_FETCHED=1
+    else
+        skip "could not reach $ELLEKIT_URL"
+        skip "tweak loader not built; re-run ./fetch_payloads.sh tweaks with network"
+    fi
+fi
+if [ "$EK_FETCHED" = 1 ]; then
     got=$(shasum -a 256 "$deb" | awk '{print $1}')
     [ "$got" = "$ELLEKIT_SHA" ] \
         || die "$ELLEKIT_DEB sha256 mismatch: got $got expected $ELLEKIT_SHA"
@@ -389,16 +416,21 @@ if wants tweaks; then
         || die "libinjector.dylib has no module initialiser; a bare dlopen would do nothing"
     ok "$ELLEKIT_DEB hash-verified, both slices, no entitlements, initialiser present"
 
-    rm -rf "$OUT/tweaks" && mkdir -p "$OUT/tweaks/TweakInject"
-    cp "$EK/ellekit/libinjector.dylib" "$OUT/tweaks/libinjector.dylib"
+    # Built in a sibling and renamed into place only once every check below has
+    # passed. Writing into payload/tweaks directly meant a rebuild that failed
+    # anywhere after the first rm -rf left no tweak set at all, so a transient
+    # build failure took away the last working one as well as the new one.
+    STAGE="$OUT/.tweaks-building"
+    rm -rf "$STAGE" && mkdir -p "$STAGE/TweakInject"
+    cp "$EK/ellekit/libinjector.dylib" "$STAGE/libinjector.dylib"
     # Named by libinjector itself, so it is staged rather than left to resolve
     # to a path that does not exist.
-    cp "$EK/ellekit/MobileSafety.dylib" "$OUT/tweaks/MobileSafety.dylib"
+    cp "$EK/ellekit/MobileSafety.dylib" "$STAGE/MobileSafety.dylib"
 
     # The deb itself, for finalize.sh to install on a booted device. It is the
     # upstream package, unmodified and hash-pinned above, so ElleKit stays
     # ElleKit's: its own control, its own maintainer, its own version in dpkg.
-    cp "$deb" "$OUT/tweaks/ellekit.deb"
+    cp "$deb" "$STAGE/ellekit.deb"
 
     # ElleKit ships its dylibs at flags=0x0. Measured on device: they load and
     # run perfectly well that way, so this is not a requirement and an earlier
@@ -407,12 +439,12 @@ if wants tweaks; then
     # state we chose is one less variable when something fails to load. Their
     # identifiers are already their file names, so ldid's default preserves them.
     for lib in libinjector.dylib MobileSafety.dylib; do
-        "$LDID" -S -Cadhoc "$OUT/tweaks/$lib" || die "could not re-sign $lib"
-        codesign -dv "$OUT/tweaks/$lib" 2>&1 | grep -q 'flags=0x2(adhoc)' \
+        "$LDID" -S -Cadhoc "$STAGE/$lib" || die "could not re-sign $lib"
+        codesign -dv "$STAGE/$lib" 2>&1 | grep -q 'flags=0x2(adhoc)' \
             || die "$lib is still not ad-hoc signed"
-        [ -z "$("$LDID" -e "$OUT/tweaks/$lib")" ] \
+        [ -z "$("$LDID" -e "$STAGE/$lib")" ] \
             || die "$lib gained entitlements while being re-signed"
-        codesign -v "$OUT/tweaks/$lib" || die "$lib code-slot verification failed"
+        codesign -v "$STAGE/$lib" || die "$lib code-slot verification failed"
     done
     ok "loader and safe-mode payload staged and re-signed; ellekit.deb staged for finalize"
 
@@ -422,17 +454,21 @@ if wants tweaks; then
     ( cd personafix && ./build.sh ) || die "l8persona build failed"
     for tweak in localauthfix/l8localauth personafix/l8persona; do
         name=$(basename "$tweak")
-        cp "$tweak.dylib" "$OUT/tweaks/TweakInject/$name.dylib"
-        cp "$tweak.plist" "$OUT/tweaks/TweakInject/$name.plist"
-        plutil -lint "$OUT/tweaks/TweakInject/$name.plist" >/dev/null \
+        cp "$tweak.dylib" "$STAGE/TweakInject/$name.dylib"
+        cp "$tweak.plist" "$STAGE/TweakInject/$name.plist"
+        plutil -lint "$STAGE/TweakInject/$name.plist" >/dev/null \
             || die "$name.plist does not lint"
         # Both are ElleKit tweaks loaded by filter, so the install name has to
         # be the TweakInject path and not wherever the build ran.
-        otool -D "$OUT/tweaks/TweakInject/$name.dylib" \
+        otool -D "$STAGE/TweakInject/$name.dylib" \
             | grep -qx "/var/jb/usr/lib/TweakInject/$name.dylib" \
             || die "$name.dylib install name is not its TweakInject path"
         ok "$name.dylib and its filter plist staged"
     done
+
+    # Everything above passed, so the previous set is now safe to replace.
+    rm -rf "$OUT/tweaks" && mv "$STAGE" "$OUT/tweaks" \
+        || die "could not move the verified tweak set into $OUT/tweaks"
 fi
 
 # ------------------------------------------------------------------ pairing
@@ -538,8 +574,7 @@ if wants helpers; then
     fi
 
     uicache_asset="$WORK/uicache27-$UICACHE_VER"
-    [ -f "$uicache_asset" ] \
-        || curl -sL --fail -o "$uicache_asset" "$UICACHE_URL" \
+    fetch_cached "$uicache_asset" "$UICACHE_URL" \
         || die "uicache download failed: $UICACHE_URL"
     got=$(shasum -a 256 "$uicache_asset" | awk '{print $1}')
     [ "$got" = "$UICACHE_SHA" ] \
@@ -570,7 +605,7 @@ if wants debugserver; then
     rm -rf "$WORK/debugserver" && mkdir -p "$WORK/debugserver"
 
     deb="$WORK/$DEBUGSERVER_DEB"
-    [ -f "$deb" ] || curl -sL --fail -o "$deb" "$PROCURSUS_LLVM/$DEBUGSERVER_DEB" \
+    fetch_cached "$deb" "$PROCURSUS_LLVM/$DEBUGSERVER_DEB" \
         || die "download failed: $PROCURSUS_LLVM/$DEBUGSERVER_DEB"
     got=$(shasum -a 256 "$deb" | awk '{print $1}')
     [ "$got" = "$DEBUGSERVER_SHA" ] \
@@ -634,7 +669,7 @@ fi
 if wants trollstore; then
     say "TrollStore helper $TROLLSTORE_VER"
     deb="$WORK/$TROLLSTORE_DEB"
-    [ -f "$deb" ] || curl -sL --fail -o "$deb" "$TROLLSTORE_URL" \
+    fetch_cached "$deb" "$TROLLSTORE_URL" \
         || die "download failed: $TROLLSTORE_URL"
     got=$(shasum -a 256 "$deb" | awk '{print $1}')
     [ "$got" = "$TROLLSTORE_SHA" ] \
