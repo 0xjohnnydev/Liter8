@@ -46,6 +46,10 @@ integration: build
 	python3 Tests/ipsw-robustness-integration.py
 	python3 Tests/firmware-container-integration.py
 	python3 Tests/python-workflow-tests.py
+	# The session guard that decides whether launchd injects. Compiles the
+	# header's probe and exercises absent, legacy-empty, malformed, stale and
+	# current markers. Boot-critical and otherwise uncovered by any target.
+	python3 Tests/lhook-session-tests.py
 	# Scoped help and per-action option isolation. Needs no firmware: the checks
 	# that want one skip unless MACHO, KERNEL and IM4P are exported.
 	zsh Tests/cli_assert.sh .build/debug/liter8

@@ -1268,7 +1268,30 @@ note "lhook.dylib" "$injection_hook"
 note "icon systemhook" "$injection_systemhook"
 note "icon token issuer" "$injection_sbextissue"
 note "lhook deny policy" "$(sh_dev '[ -s /mnt2/jb/etc/lhook.deny ] && ! grep -qx xpcproxy /mnt2/jb/etc/lhook.deny && echo OK || echo MISSING' | tr -d '\r')"
-note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo ENABLED || echo disabled' | tr -d '\r')"
+
+if [ -f payload/lhookctl ]; then
+    verify_lhookctl=$(shasum -a 256 payload/lhookctl | awk '{print $1}')
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl' > payload/.work/verify.lhookctl 2>/dev/null || true
+    [ -s payload/.work/verify.lhookctl ] && \
+        [ "$(shasum -a 256 payload/.work/verify.lhookctl | awk '{print $1}')" = "$verify_lhookctl" ] && \
+        sh_dev '[ -x /mnt2/jb/usr/bin/lhookctl ]' \
+        && lhookctl_state=OK || lhookctl_state=MISMATCH
+else
+    lhookctl_state=MISSING
+fi
+# Without the controller the session-bound hook cannot be enabled through the
+# documented interface, so --check reporting the injection setup complete while
+# it is absent is a false pass. The write path hashed it; this is the path that
+# runs on its own.
+note "lhookctl" "$lhookctl_state"
+
+# A marker observed from the ramdisk is stale by construction: it holds the UUID
+# of a boot session that has already ended, and kern.bootsessionuuid is new on
+# every boot, so the guard in lhook_session.h cannot match it. Reporting its
+# presence as ENABLED made `fw provision --check` call a safe device unsafe,
+# because --check runs only mounts and verify and so never reaches the step that
+# moves the marker aside. Report the file, not a verdict the guard contradicts.
+note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo "stale marker, guard disables it" || echo disabled' | tr -d '\r')"
 
 # The cache is the one file that can be the right SIZE and still be wrong, and
 # it is what provides SSH on a normal boot. Pull it back and check its contents.
