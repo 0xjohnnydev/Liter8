@@ -618,7 +618,7 @@ fi
 # --------------------------------------------------------------- injection
 if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     say "launchd injection bootstrap"
-    for required in payload/launchd.orig payload/launchd.hooked \
+    for required in payload/launchd.orig payload/launchd.hooked payload/launchd.hooked-legacy \
                     payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl \
                     launchdhook/lhook.deny; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh injection"
@@ -626,6 +626,7 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
 
     stock_sha=$(shasum -a 256 payload/launchd.orig | awk '{print $1}')
     hooked_sha=$(shasum -a 256 payload/launchd.hooked | awk '{print $1}')
+    legacy_sha=$(shasum -a 256 payload/launchd.hooked-legacy | awk '{print $1}')
     hook_sha=$(shasum -a 256 payload/lhook.dylib | awk '{print $1}')
     systemhook_sha=$(shasum -a 256 payload/systemhook.dylib | awk '{print $1}')
     sbextissue_sha=$(shasum -a 256 payload/sbextissue | awk '{print $1}')
@@ -636,6 +637,15 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
         || die "launchd payload byte-diff verification failed"
     codesign -v payload/launchd.hooked \
         || die "launchd payload code-slot verification failed"
+    # The previous-path image is never installed, only recognised, so it is
+    # verified by the same rules before its hash is allowed to mean anything.
+    python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked-legacy \
+        /usr/lib/lhook.dylib >/dev/null \
+        || die "previous-path launchd byte-diff verification failed"
+    codesign -v payload/launchd.hooked-legacy \
+        || die "previous-path launchd code-slot verification failed"
+    [ "$legacy_sha" != "$hooked_sha" ] \
+        || die "the two hook paths hash identically; the path change is not in effect"
     for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl; do
         codesign -v "$binary" || die "$binary signature verification failed"
         [ -z "$("$LDID" -e "$binary")" ] \
@@ -652,12 +662,21 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/launchd.ondevice \
         || die "could not read on-device /sbin/launchd"
     current_sha=$(shasum -a 256 payload/.work/launchd.ondevice | awk '{print $1}')
+    # hooked-legacy is a device this repo hooked before the load command moved
+    # from /usr/lib/lhook.dylib to /usr/lib/lhook. It is an image this script
+    # built and verified above, so it is as known a state as the other two, and
+    # it is replaced the same way. Without this case every device provisioned by
+    # an older revision hit a hard die on its first upgrade, naming no cause and
+    # offering no recovery.
     case "$current_sha" in
         "$stock_sha") current_state=stock ;;
         "$hooked_sha") current_state=hooked ;;
-        *) die "on-device /sbin/launchd is neither reviewed stock nor reviewed hooked ($current_sha)" ;;
+        "$legacy_sha") current_state=hooked-legacy ;;
+        *) die "on-device /sbin/launchd is none of reviewed stock, reviewed hooked or the previous hook path ($current_sha)" ;;
     esac
     ok "on-device launchd is $current_state"
+    [ "$current_state" != hooked-legacy ] \
+        || ok "upgrading from the previous hook path; the inert /usr/lib/lhook.dylib is left in place"
 
     if sh_dev '[ -f /mnt1/sbin/launchd.bak ]'; then
         sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/launchd.bak.ondevice \

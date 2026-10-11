@@ -280,8 +280,28 @@ if wants injection; then
     codesign -v "$WORK/launchd.hooked" \
         || die "launchd code-slot verification failed"
 
+    # The same patch against the path this repo used before the hook moved to
+    # /usr/lib/lhook. Nothing installs this image; it exists so provisioning can
+    # recognise a device already hooked by the old build as a known state rather
+    # than refusing to touch an unrecognised launchd. Built from the same
+    # reviewed stock by the same patcher, and byte-diff verified like the real
+    # one, so recognising it is not the same as trusting whatever is on a phone.
+    python3 launchdhook/patch_launchd.py "$WORK/launchd.orig" \
+        -o "$WORK/launchd.hooked-legacy" --path /usr/lib/lhook.dylib --apply >/dev/null \
+        || die "could not build the previous-path launchd for recognition"
+    python3 launchdhook/resign_pagehashes.py "$WORK/launchd.hooked-legacy" --apply >/dev/null \
+        || die "could not repair the previous-path launchd page hashes"
+    python3 launchdhook/verify_diff.py "$WORK/launchd.orig" "$WORK/launchd.hooked-legacy" \
+        /usr/lib/lhook.dylib >/dev/null \
+        || die "previous-path launchd byte-diff verification failed"
+    codesign -v "$WORK/launchd.hooked-legacy" \
+        || die "previous-path launchd code-slot verification failed"
+    cmp -s "$WORK/launchd.hooked" "$WORK/launchd.hooked-legacy" \
+        && die "the two hook paths produced identical images; the path change is not in effect"
+
     cp "$WORK/launchd.orig" "$OUT/launchd.orig"
     cp "$WORK/launchd.hooked" "$OUT/launchd.hooked"
+    cp "$WORK/launchd.hooked-legacy" "$OUT/launchd.hooked-legacy"
     ok "launchd, lhook, icon sandbox payload and token issuer ready"
 fi
 
