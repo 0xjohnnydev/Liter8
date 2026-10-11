@@ -60,6 +60,7 @@ class Context:
     restore_ibss_additional_plans: tuple[str, ...] = ()
     preserve_im4p_compression: bool = False
     normal_boot_static_trust_cache: bool = False
+    optional_passthrough_firmware: frozenset[str] = frozenset()
 
     @classmethod
     def load(cls) -> "Context":
@@ -86,6 +87,15 @@ class Context:
         static_trust_cache = boot_plan.get("normalBootUsesStaticTrustCache")
         if not isinstance(static_trust_cache, bool):
             raise WorkflowError("Liter8 context boot plan has no normal-boot trust cache policy")
+        # Which passthrough firmware this board may legitimately lack. Required
+        # for the same reason as the arrays above: an absent key means an old
+        # launcher wrote this file, not that every image is optional. The empty
+        # case is the normal one and makes the whole set mandatory.
+        optional_firmware = boot_plan.get("optionalPassthroughFirmware")
+        if not isinstance(optional_firmware, list) or not all(
+            isinstance(name, str) for name in optional_firmware
+        ):
+            raise WorkflowError("Liter8 context boot plan has no optional firmware policy")
 
         work = Path.cwd().resolve()
         source = Path(document["sourceRoot"]).resolve()
@@ -105,6 +115,7 @@ class Context:
             restore_ibss_additional_plans=restore_plans,
             preserve_im4p_compression=preserve_compression,
             normal_boot_static_trust_cache=static_trust_cache,
+            optional_passthrough_firmware=frozenset(optional_firmware),
         )
 
     def component(self, name: str, *, in_cfw: bool = False) -> Path:

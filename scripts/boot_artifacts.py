@@ -32,34 +32,40 @@ PASSTHROUGH_IMG4 = [
 
 TRUST_CACHES = {"StaticTrustCache", "RestoreTrustCache"}
 
-# The only firmware a supported board may legitimately lack. j171aap is A12/PPL
-# with no SPTM, so it has neither SPTM nor its PMP and WCH companions. Anything
-# outside this set and the trust caches is common to every board we boot, and a
-# selected identity that omits one is a manifest we do not understand.
-BOARD_OPTIONAL = {"Ap,SecurePageTableMonitor", "PMP", "WCHFirmwareUpdater"}
-
-
 def selected_passthrough(
-    components: dict[str, str], mode: str, *, static_trust_cache: bool = False
+    components: dict[str, str], mode: str, *, static_trust_cache: bool = False,
+    optional_firmware: frozenset[str] = frozenset()
 ) -> list[tuple[str, str, str]]:
     """Firmware from PASSTHROUGH_IMG4 that the selected BuildManifest identity has.
 
-    Boards differ: j171aap has no SPTM, PMP or WCH. Exactly one trust cache
-    is sent. n104 boots both modes with RestoreTrustCache; a profile whose
-    normal boot needs the System-volume cache sets static_trust_cache.
+    Exactly one trust cache is sent. n104 boots both modes with
+    RestoreTrustCache; a profile whose normal boot needs the System-volume
+    cache sets static_trust_cache.
 
-    Everything else is mandatory. Filtering the list by what the identity
-    happens to contain would drop a common image silently, and validate_boot_set
-    derives its required filenames from this same result, so nothing downstream
-    would notice before the chain reached the device.
+    Everything else is mandatory unless the profile names it in
+    optional_firmware. That list comes from the reviewed profile, never from
+    which components happen to be present: deciding by presence means an
+    identity missing an image it should carry passes silently, and
+    validate_boot_set derives its required filenames from this same result, so
+    nothing downstream would notice before the chain reached the device.
+
+    The empty default is the conservative one and the state of every profile
+    registered today, which makes the whole set mandatory. j171aap is the known
+    exception, being A12/PPL with no SPTM and therefore none of SPTM, PMP or
+    WCH, and it will say so in its own profile.
     """
     trust_cache = (
         "StaticTrustCache" if mode == "normal" and static_trust_cache
         else "RestoreTrustCache"
     )
+    unknown = sorted(optional_firmware - {entry[0] for entry in PASSTHROUGH_IMG4})
+    if unknown:
+        raise WorkflowError(
+            f"profile marks firmware optional that is not passthrough: {', '.join(unknown)}"
+        )
     required = {
         entry[0] for entry in PASSTHROUGH_IMG4
-        if entry[0] not in BOARD_OPTIONAL and entry[0] not in TRUST_CACHES
+        if entry[0] not in optional_firmware and entry[0] not in TRUST_CACHES
     } | {trust_cache}
     missing = sorted(required - components.keys())
     if missing:
@@ -166,6 +172,7 @@ def build_normal_boot() -> None:
     firmware = selected_passthrough(
         context.components, "normal",
         static_trust_cache=context.normal_boot_static_trust_cache,
+        optional_firmware=context.optional_passthrough_firmware,
     )
     patch_txm = has_txm(context.components, "normal")
 
@@ -251,7 +258,10 @@ def build_restore_boot() -> None:
     """Build the ticketed SSH restore-ramdisk artifact set."""
     context = Context.load()
     ticket = ticket_from_environment()
-    firmware = selected_passthrough(context.components, "restore")
+    firmware = selected_passthrough(
+        context.components, "restore",
+        optional_firmware=context.optional_passthrough_firmware,
+    )
     patch_txm = has_txm(context.components, "restore")
 
     with tempfile.TemporaryDirectory(prefix="rd-staging-", dir=context.state) as directory:

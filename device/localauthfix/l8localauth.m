@@ -67,6 +67,10 @@
  * the framework (LAErrorDomain is a symbol, not a macro). */
 static NSString *const kL8LADomain = @"com.apple.LocalAuthentication";
 static const NSInteger kL8PasscodeNotSet = -5;
+/* ACM's status when there is no credential to verify against, which is what a
+ * SEP-less boot produces. Named so the matcher reads as a status comparison
+ * rather than a string that happens to appear in the message. */
+static const NSInteger kL8ACMNoCredential = -3;
 
 typedef void (^PolicyReply)(id result, NSError *error);
 typedef void (^AccessReply)(BOOL success, NSError *error);
@@ -104,8 +108,19 @@ static BOOL is_sep_less_acm_failure(NSError *error) {
     id detail = error.userInfo[NSDebugDescriptionErrorKey];
     if (![detail isKindOfClass:[NSString class]]) return NO;
     NSString *text = (NSString *)detail;
+    if (![text containsString:@"ACM verification"]) return NO;
     // "ACM verification of <policy> on ACMContext N failed: -3"
-    return [text containsString:@"ACM verification"] && [text containsString:@"failed: -3"];
+    //
+    // Parse the status rather than matching its text: "failed: -3" is a prefix
+    // of "failed: -30", so a substring test also claims unrelated ACM failures
+    // and rewrites them into the bypass. scanInteger consumes the whole run, so
+    // -30 scans as -30 and is rejected by the comparison.
+    NSRange marker = [text rangeOfString:@"failed: "];
+    if (marker.location == NSNotFound) return NO;
+    NSScanner *scanner =
+        [NSScanner scannerWithString:[text substringFromIndex:NSMaxRange(marker)]];
+    NSInteger status = 0;
+    return [scanner scanInteger:&status] && status == kL8ACMNoCredential;
 }
 
 static NSError *translated(NSError *error) {
@@ -279,6 +294,24 @@ int main(void) {
         if (translated(otherMinus1000) != otherMinus1000) return 3;
         if (translated(wrongDomain) != wrongDomain) return 4;
         if (translated(nil) != nil) return 5;
+
+        /* "failed: -3" is a prefix of "failed: -30". An unrelated ACM status
+         * must keep stock behaviour instead of being rewritten into the bypass. */
+        for (NSString *other in @[@"-30", @"-31", @"-399", @"-3000"]) {
+            NSError *near = [NSError errorWithDomain:kL8LADomain code:-1000
+                userInfo:@{NSDebugDescriptionErrorKey: [NSString stringWithFormat:
+                    @"ACM verification of Oslo on ACMContext 0 failed: %@", other]}];
+            if (translated(near) != near) return 13;
+        }
+        /* The real one still matches, with and without trailing text. */
+        NSError *trailing = [NSError errorWithDomain:kL8LADomain code:-1000
+            userInfo:@{NSDebugDescriptionErrorKey:
+                @"ACM verification of Oslo on ACMContext 0 failed: -3 (ignored)"}];
+        if (translated(trailing).code != kL8PasscodeNotSet) return 14;
+        /* A message with no status at all is not a match. */
+        NSError *noStatus = [NSError errorWithDomain:kL8LADomain code:-1000
+            userInfo:@{NSDebugDescriptionErrorKey: @"ACM verification of Oslo gave up"}];
+        if (translated(noStatus) != noStatus) return 15;
         // Translation is idempotent, so a hooked public method calling a
         // hooked private one cannot translate twice into something else.
         if (translated(translated(acm)).code != kL8PasscodeNotSet) return 6;

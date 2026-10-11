@@ -8,6 +8,38 @@ sh build.sh
     echo 'Mount System at /mnt1 and Data at /mnt2 in SSHRD first.' >&2
     exit 1
 }
+CHECK_DIR=$(mktemp -d)
+trap 'rm -rf "$CHECK_DIR"' EXIT HUP INT TERM
+
+# What the installed launchd actually loads, read from the device rather than
+# assumed. This script only ever writes /usr/lib/lhook. On a device provisioned
+# before the hook moved, launchd still names /usr/lib/lhook.dylib, so that write
+# installs a hook nothing loads while the old one keeps running with the
+# pre-session-guard behaviour that treats a leftover empty marker as enabled.
+# Reporting success there is the one outcome this script must not produce.
+#
+# Read on the host: otool is here, and the ramdisk is not known to have it.
+"$SSH" 'cat /mnt1/sbin/launchd' > "$CHECK_DIR/launchd.ondevice"
+HOOK_PATH=$(otool -l "$CHECK_DIR/launchd.ondevice" \
+    | grep -A3 LC_LOAD_WEAK_DYLIB \
+    | sed -n 's/^ *name \(\/usr\/lib\/lhook[^ ]*\) .*/\1/p' | head -1)
+case "$HOOK_PATH" in
+    /usr/lib/lhook) ;;
+    /usr/lib/lhook.dylib)
+        echo "This device's launchd loads /usr/lib/lhook.dylib, the path used before the" >&2
+        echo 'hook moved. Writing /usr/lib/lhook here would leave that older hook active' >&2
+        echo 'and the session guard not in effect, so this stops instead.' >&2
+        echo 'Run the full provisioner: it recognises that launchd and replaces it.' >&2
+        exit 1 ;;
+    '')
+        echo 'This launchd has no lhook load command, so nothing would load what this' >&2
+        echo 'script writes. Provision the device first.' >&2
+        exit 1 ;;
+    *)
+        echo "This launchd loads an unrecognised hook path: $HOOK_PATH" >&2
+        exit 1 ;;
+esac
+
 "$SSH" '
 if [ -f /mnt1/usr/lib/lhook ] && [ ! -e /mnt1/usr/lib/lhook.before-session-guard ]; then
     cp /mnt1/usr/lib/lhook /mnt1/usr/lib/lhook.before-session-guard || exit 1
@@ -17,8 +49,6 @@ if [ -f /mnt2/jb/usr/bin/lhookctl ] && [ ! -e /mnt2/jb/usr/bin/lhookctl.before-s
 fi'
 "$SSH" 'cat > /mnt1/usr/lib/lhook.session-new' < lhook.dylib
 "$SSH" 'cat > /mnt2/jb/usr/bin/lhookctl.session-new' < lhookctl
-CHECK_DIR=$(mktemp -d)
-trap 'rm -rf "$CHECK_DIR"' EXIT HUP INT TERM
 "$SSH" 'cat /mnt1/usr/lib/lhook.session-new' > "$CHECK_DIR/lhook"
 "$SSH" 'cat /mnt2/jb/usr/bin/lhookctl.session-new' > "$CHECK_DIR/lhookctl"
 cmp lhook.dylib "$CHECK_DIR/lhook"
