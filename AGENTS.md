@@ -121,7 +121,7 @@ For every finding, give **severity, `path:line`, trigger/precondition, actual co
 
 ## Testing and validation
 
-Requires macOS 14+, Swift 6 and the dependencies in `README.md`. `make setup` initializes pinned submodules, builds external tools and prepares the Python runtime; it can access the network and change local setup state. Use it only when needed.
+Requires macOS 14+, Swift 6 and the dependencies in `README.md`. `make setup` initializes pinned submodules, builds external tools and prepares the Python runtime; it can access the network and change local setup state. Use it only when needed, but note that the Python suites do need it: `scripts/restore_cfw.py` imports PyUSB at module scope, so `make integration` fails at import rather than reporting a test result until `requirements.txt` is installed.
 
 | Command | What it verifies |
 | --- | --- |
@@ -135,6 +135,10 @@ Requires macOS 14+, Swift 6 and the dependencies in `README.md`. `make setup` in
 | `make check` | `test-full`, `test-e2e` and `integration` |
 
 Private Apple binaries are **not** shipped. `LITER8_FIXTURE_ROOT` points to an operator-owned private fixture tree. A fixture test that **skips** because input binaries are missing does not prove the affected resolver or patched-output hash. Clearly report passes, failures, skips, and tests not run. Prefer release mode for full-size kernelcache scans and `resolve`/`inspect`/`survey` for non-mutating investigation.
+
+Establish a baseline before attributing a failure. Run the same suite on the merge-base, not only on the branch under review: this tree can carry a pre-existing failure, and a test that asserts on source text rather than behavior goes stale when the code it greps for is refactored. Report a failure as pre-existing when the baseline shows it, and compare test **counts** as well as pass/fail so an added test is not mistaken for a fixed one.
+
+Read a command's own exit status, never a pipeline's. `swift test 2>&1 | tail -25` reports `tail`'s status, so a failing suite looks like a pass. Redirect to a file and inspect it instead. This repo has shipped that exact bug before, in `device/setup_debugger.sh`, where a failed `apt` was reported as success.
 
 When changing a resolver, test a clean exact-build input, missing/ambiguous anchors, modified pre-image, overlap/out-of-bounds where relevant, already-applied behavior, complete output hash and unrelated supported builds. When changing workflow code, exercise stale/wrong-board/wrong-mode state, path traversal, incomplete staging, rollback, subprocess failure, interruption and repeated execution. Use mocks/synthetic fixtures for host-device boundaries before proposing a hardware test.
 
