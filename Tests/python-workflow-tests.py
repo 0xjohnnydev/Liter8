@@ -1135,6 +1135,61 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(validate_boot_set(fixture_context, "restore"), self.work / "Ramdisk")
         self.assertFalse(has_txm(components, "restore"))
 
+    def test_rejects_an_identity_missing_firmware_common_to_every_board(self):
+        """A dropped common image must fail here, not reach the device.
+
+        Only SPTM, PMP and WCH may be absent, and only because j171aap has no
+        SPTM. Selecting by what the identity happens to contain would omit a
+        common image silently, and validate_boot_set derives its required
+        filenames from the same result, so nothing downstream would catch it.
+        """
+        # SPTM and TXM travel together or has_txm rejects the pair first.
+        n104 = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        n104["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        j171aap = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+        for board, components in (("n104", n104), ("j171aap", j171aap)):
+            for dropped in ("ANE", "AOP", "AVE", "GFX", "ISP", "SIO", "SEP", "RestoreLogo"):
+                partial = {k: v for k, v in components.items() if k != dropped}
+                with self.subTest(board=board, dropped=dropped):
+                    with self.assertRaisesRegex(WorkflowError, f"missing required boot firmware: {dropped}"):
+                        selected_firmware_sequence(partial, "restore")
+
+    def test_board_optional_firmware_stays_optional(self):
+        """The j171aap exception must keep working, or no A12 board can boot."""
+        components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        components["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        # Dropping SPTM drops TXM with it; has_txm owns that pairing and has its
+        # own test. Here the question is only whether the three are optional.
+        for dropped in (
+            ("Ap,SecurePageTableMonitor", "Ap,RestoreTrustedExecutionMonitor"),
+            ("PMP",),
+            ("WCHFirmwareUpdater",),
+        ):
+            partial = {k: v for k, v in components.items() if k not in dropped}
+            with self.subTest(dropped=dropped[0]):
+                selected = [name for name, _, _ in selected_firmware_sequence(partial, "restore")]
+                self.assertNotIn(f"{dropped[0]}.img4", selected)
+                self.assertIn("ANE.img4", selected)
+
+    def test_rejects_an_identity_missing_the_selected_trust_cache(self):
+        """Exactly one trust cache is sent, and it is the one the profile picks."""
+        components = {
+            name: name for name, _, _ in PASSTHROUGH_IMG4 if name != "StaticTrustCache"
+        }
+        components["Ap,TrustedExecutionMonitor"] = "txm.im4p"
+        with self.assertRaisesRegex(WorkflowError, "missing required boot firmware: StaticTrustCache"):
+            selected_firmware_sequence(components, "normal", static_trust_cache=True)
+        # The other cache being absent is irrelevant when it is not selected.
+        self.assertIn(
+            "RestoreTrustCache.img4",
+            [name for name, _, _ in selected_firmware_sequence(components, "normal")],
+        )
+
     def test_static_trust_cache_is_profile_selected_for_normal_boot_only(self):
         components = {
             name: f"Firmware/{name}.im4p" for name in (
