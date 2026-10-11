@@ -1,0 +1,12 @@
+# The pinned ElleKit package, named once and read by both the fetcher and the
+# installer. fetch_payloads.sh verifies this digest on download; finalize.sh
+# verifies it again immediately before handing the file to dpkg, which runs its
+# maintainer scripts as root.
+#
+# The second check is worth having because the two steps are separate actions:
+# `fw finalize` does not rerun the fetch, and the payload it installs sits in a
+# mutable work directory in between. It catches a swapped build artifact. It
+# cannot defend against someone who can also edit these scripts, and does not
+# claim to.
+ELLEKIT_VER=1.2
+ELLEKIT_SHA=e21dc91bdc1be193dc915daecfff45256239b4fe583a36861e662ab1f43906dc

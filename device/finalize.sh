@@ -147,14 +147,67 @@ fi
 # upstream's own unsigned copies. Measured: those load and run perfectly well, so
 # the overwrite is harmless.
 say "ElleKit package"
+# Version and digest come from device/ellekit.pin, the same file fetch_payloads.sh
+# checked on download.
+. ./ellekit.pin
 EK_DEB=payload/tweaks/ellekit.deb
+EK_LINKS=(/var/jb/usr/lib/TweakLoader.dylib /var/jb/usr/lib/libsubstrate.dylib
+          /var/jb/usr/lib/libhooker.dylib /var/jb/usr/lib/libblackjack.dylib
+          /var/jb/usr/lib/TweakInject.dylib
+          /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate
+          /var/jb/Library/MobileSubstrate/DynamicLibraries)
+
+# What has to be true after this step whether or not it installed anything.
+# A finalize interrupted between dpkg registering the package and this running
+# leaves the competing boot script in place and the links unchecked, and the
+# retry must not accept that state just because dpkg says "installed".
+ek_broken_links() {
+    local bad=() link
+    for link in $EK_LINKS; do
+        sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 || bad+=("$link")
+    done
+    print -r -- "${bad[@]}"
+}
+ek_boot_script_present() {
+    sh_dev "$RPATH; [ -e /var/jb/etc/rc.d/ellekit-loader ]" >/dev/null 2>&1
+}
+
 # Ask for the status, not the version. A removed package keeps its version in
 # dpkg's database while its state is "deinstall ok config-files" and every one
 # of its files is gone, so a non-empty version means "dpkg has heard of it",
 # not "it is installed".
 EK_STATE=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
-if [[ "$EK_STATE" == *"install ok installed"* ]]; then
-    skip "ellekit ${EK_STATE%% *} already installed"
+EK_INSTALLED=0
+[[ "$EK_STATE" == *"install ok installed"* ]] && EK_INSTALLED=1
+
+if (( EK_INSTALLED )) && [[ "${EK_STATE%% *}" != "$ELLEKIT_VER" ]]; then
+    skip "ellekit ${EK_STATE%% *} is installed, but this tree pins $ELLEKIT_VER"
+    FINALIZE_INCOMPLETE=1
+elif (( EK_INSTALLED )); then
+    EK_BAD=(${=$(ek_broken_links)})
+    if ek_boot_script_present || (( ${#EK_BAD} )); then
+        if (( CHECK_ONLY )); then
+            printf '    [=] ellekit %s installed but incomplete: %s\n' "$ELLEKIT_VER" \
+                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}}"
+            FINALIZE_INCOMPLETE=1
+        else
+            sh_dev "$RPATH; rm -f /var/jb/etc/rc.d/ellekit-loader" >/dev/null
+            EK_BAD=(${=$(ek_broken_links)})
+            if (( ${#EK_BAD} )); then
+                # The links are the package's own, so this step cannot recreate
+                # them without guessing. Say what is wrong and let the rest of
+                # finalize run: nothing after this depends on them.
+                printf '    [!] ellekit is installed but these do not resolve: %s\n' \
+                    "${${(@)EK_BAD:t}[*]}"
+                printf '    [!] reinstall it: dpkg -i /var/root/ellekit.deb on the device\n'
+                FINALIZE_INCOMPLETE=1
+            else
+                ok "ellekit $ELLEKIT_VER already installed; boot script removed, links checked"
+            fi
+        fi
+    else
+        skip "ellekit $ELLEKIT_VER already installed and complete"
+    fi
 elif [[ ! -f "$EK_DEB" ]]; then
     skip "$EK_DEB absent; run ./fetch_payloads.sh tweaks"
     FINALIZE_INCOMPLETE=1
@@ -162,24 +215,36 @@ elif (( CHECK_ONLY )); then
     skip "ellekit is not installed; this step would install $EK_DEB"
     FINALIZE_INCOMPLETE=1
 else
+    # Re-verify the pinned digest here, not only at fetch time. finalize is a
+    # separate action that does not rerun the fetch, and this file has sat in a
+    # mutable work directory since. dpkg runs maintainer scripts as root, so the
+    # thing being handed to it gets checked immediately before the handover.
+    EK_GOT_SHA=$(shasum -a 256 "$EK_DEB" | awk '{print $1}')
+    [[ "$EK_GOT_SHA" == "$ELLEKIT_SHA" ]] \
+        || die "$EK_DEB does not match the pinned digest; refusing to install. got $EK_GOT_SHA"
     sh_dev "$RPATH; tee /var/root/ellekit.deb >/dev/null" < "$EK_DEB" \
         || die "could not copy $EK_DEB to the device"
+    # Hash the readback here, not on the device: shasum is not part of the
+    # on-device tool set, and a missing tool returns empty rather than failing.
+    EK_LANDED=$(sh_dev "$RPATH; cat /var/root/ellekit.deb" | shasum -a 256 | awk '{print $1}')
+    [[ "$EK_LANDED" == "$ELLEKIT_SHA" ]] \
+        || die "the copy on the device does not match the pinned digest: ${EK_LANDED:-nothing}"
     # Its postinst runs ElleKit's own loader, which asserts and dies here
     # because lhook already owns launchd. dpkg carries on and the install is
     # fine, so the exit status is not the thing to judge this by: ask dpkg.
     sh_dev "$RPATH; dpkg -i /var/root/ellekit.deb 2>&1 | tail -4" | sed 's/^/        /'
-    EK_GOT=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
-    [[ "$EK_GOT" == *"install ok installed"* ]] \
-        || die "ellekit did not register with dpkg: ${EK_GOT:-nothing}"
+    EK_STATE=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
+    [[ "$EK_STATE" == *"install ok installed"* ]] \
+        || die "ellekit did not register with dpkg: ${EK_STATE:-nothing}"
+    [[ "${EK_STATE%% *}" == "$ELLEKIT_VER" ]] \
+        || die "dpkg registered ellekit ${EK_STATE%% *}, expected $ELLEKIT_VER"
     # That loader would be run again at every boot for the same assertion, so
     # the boot script goes. dpkg -V will report it missing, which is accurate.
     sh_dev "$RPATH; rm -f /var/jb/etc/rc.d/ellekit-loader" >/dev/null
-    for link in /var/jb/usr/lib/TweakLoader.dylib /var/jb/usr/lib/libsubstrate.dylib \
-                /var/jb/Library/MobileSubstrate/DynamicLibraries; do
-        sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 \
-            || die "$link does not resolve after installing ellekit"
-    done
-    ok "ellekit ${EK_GOT%% *} installed; compatibility names resolve; its boot script removed"
+    EK_BAD=(${=$(ek_broken_links)})
+    (( ${#EK_BAD} == 0 )) \
+        || die "these do not resolve after installing ellekit: ${${(@)EK_BAD:t}[*]}"
+    ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; boot script removed"
 fi
 
 say "one-time System application registration"

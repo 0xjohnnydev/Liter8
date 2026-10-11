@@ -124,10 +124,11 @@ TROLLSTORE_SHA=e8ea96c560268430fd437aa50cb9a97b774ee70c242a34fef12b38ef8b099c0d
 # injector/injector.c changes by one copyright line, so the loader is the same
 # code either way; the one real change disables exception-handler hooking on
 # iOS 17.4 and later, which is the correct behaviour here.
-ELLEKIT_VER=1.2
+# Version and digest live in device/ellekit.pin so finalize.sh checks the same
+# numbers this fetch verified, rather than a second copy that can drift.
+. "$BASE/ellekit.pin"
 ELLEKIT_DEB="ellekit_${ELLEKIT_VER}_iphoneos-arm64.deb"   # arm64 == rootless here
 ELLEKIT_URL="https://ellekit.space/pool/${ELLEKIT_DEB}"
-ELLEKIT_SHA=e21dc91bdc1be193dc915daecfff45256239b4fe583a36861e662ab1f43906dc
 
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 ok()   { printf '    [+] %s\n' "$1"; }
