@@ -783,7 +783,6 @@ fi
 if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     say "tweak loader and TweakInject payloads"
     for required in payload/tweaks/libinjector.dylib payload/tweaks/MobileSafety.dylib \
-                    payload/tweaks/libellekit.dylib \
                     payload/tweaks/TweakInject/l8localauth.dylib \
                     payload/tweaks/TweakInject/l8localauth.plist \
                     payload/tweaks/TweakInject/l8persona.dylib \
@@ -792,7 +791,6 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     done
 
     for binary in payload/tweaks/libinjector.dylib payload/tweaks/MobileSafety.dylib \
-                  payload/tweaks/libellekit.dylib \
                   payload/tweaks/TweakInject/l8localauth.dylib \
                   payload/tweaks/TweakInject/l8persona.dylib; do
         codesign -v "$binary" || die "$binary code-slot verification failed"
@@ -820,17 +818,20 @@ if wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     # symlink because nothing else in these scripts creates one, so ln is not a
     # tool the ramdisk is known to have, and a copy is hash-verifiable.
     #
-    # libellekit is the hooking library. Nothing here needs it: both tweaks are
-    # Objective-C method swizzles and link only Foundation. A tweak installed
-    # from a repo will need it, and it has to be the same image under every
-    # substrate-compatible name or a tweak linking libsubstrate.dylib maps a
-    # second copy of the library. Those names are therefore symlinks, created by
-    # finalize.sh on a booted device where ln exists, not here.
+    # This is deliberately the minimum that makes injection work with no network
+    # and no dpkg: the injector, the safe-mode payload it names, and the two
+    # tweaks. Both tweaks are Objective-C method swizzles linking only
+    # Foundation, so none of it needs the hooking library.
+    #
+    # The hooking library, the substrate compatibility names and the dpkg record
+    # that lets a repo tweak declare Depends: mobilesubstrate all arrive when
+    # finalize.sh installs ElleKit's own deb on a booted device. They cannot come
+    # from here: the names have to be symlinks and ln is not a tool the ramdisk
+    # is known to have, and dpkg needs a booted bootstrap.
     for entry in \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755 \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755 \
         payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755 \
-        payload/tweaks/libellekit.dylib:/mnt2/jb/usr/lib/libellekit.dylib:0755 \
         payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755 \
         payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644 \
         payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755 \
@@ -1416,7 +1417,6 @@ note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo "stale
 # injection silently does nothing.
 if [ -f payload/tweaks/libinjector.dylib ] && \
    [ -f payload/tweaks/MobileSafety.dylib ] && \
-   [ -f payload/tweaks/libellekit.dylib ] && \
    [ -f payload/tweaks/TweakInject/l8localauth.dylib ] && \
    [ -f payload/tweaks/TweakInject/l8localauth.plist ] && \
    [ -f payload/tweaks/TweakInject/l8persona.dylib ] && \
@@ -1426,7 +1426,6 @@ if [ -f payload/tweaks/libinjector.dylib ] && \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib \
         payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib \
         payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib \
-        payload/tweaks/libellekit.dylib:/mnt2/jb/usr/lib/libellekit.dylib \
         payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib \
         payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist \
         payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib \

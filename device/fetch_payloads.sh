@@ -342,19 +342,23 @@ if wants tweaks; then
         || die "$ELLEKIT_DEB sha256 mismatch: got $got expected $ELLEKIT_SHA"
 
     rm -rf "$WORK/ellekit" && mkdir -p "$WORK/ellekit"
-    # Only the three regular files we install, named explicitly. Extracting the
-    # whole payload would also unpack the deb's symlinks, every one of which
-    # points at an absolute /var/jb path that does not exist on a Mac, and a
-    # dangling symlink under device/ breaks the copytree in
+    # Only the two regular files provisioning installs, named explicitly.
+    # Extracting the whole payload would also unpack the deb's symlinks, every
+    # one of which points at an absolute /var/jb path that does not exist on a
+    # Mac, and a dangling symlink under device/ breaks the copytree in
     # scripts/device_provision.py's prepare_runtime. Naming the members also
-    # makes "we take only the loader half" a property of the extraction rather
-    # than of a later copy step.
+    # makes "we take only what provisioning needs" a property of the extraction
+    # rather than of a later copy step.
+    #
+    # libellekit.dylib is deliberately not among them. Neither tweak here links
+    # it, and finalize.sh installs the whole deb on a booted device, which is
+    # what brings the hooking library, the substrate compatibility symlinks and
+    # the dpkg record that lets a tweak depending on mobilesubstrate install.
     ( cd "$WORK/ellekit" && ar x "$deb" \
         && xz -dc control.tar.xz | tar xf - \
         && xz -dc data.tar.xz | tar xf - \
             ./var/jb/usr/lib/ellekit/libinjector.dylib \
-            ./var/jb/usr/lib/ellekit/MobileSafety.dylib \
-            ./var/jb/usr/lib/libellekit.dylib ) \
+            ./var/jb/usr/lib/ellekit/MobileSafety.dylib ) \
         || die "could not extract $ELLEKIT_DEB"
     # Nothing under the extraction may be a symlink, dangling or otherwise.
     [ -z "$(find "$WORK/ellekit" -type l)" ] \
@@ -369,7 +373,7 @@ if wants tweaks; then
         || die "$ELLEKIT_DEB has no ellekit/libinjector.dylib; layout changed?"
     # The loader is dlopened into arm64e processes, so an arm64-only build would
     # fail exactly there and nowhere a host check would notice.
-    for lib in ellekit/libinjector.dylib libellekit.dylib ellekit/MobileSafety.dylib; do
+    for lib in ellekit/libinjector.dylib ellekit/MobileSafety.dylib; do
         archs=$(lipo -archs "$EK/$lib")
         case " $archs " in *" arm64 "*)  ;; *) die "$lib is missing arm64"  ;; esac
         case " $archs " in *" arm64e "*) ;; *) die "$lib is missing arm64e" ;; esac
@@ -389,16 +393,19 @@ if wants tweaks; then
     # Named by libinjector itself, so it is staged rather than left to resolve
     # to a path that does not exist.
     cp "$EK/ellekit/MobileSafety.dylib" "$OUT/tweaks/MobileSafety.dylib"
-    # Only needed by tweaks that link libsubstrate, libhooker or CydiaSubstrate.
-    # Ours do not, but anything installed from a repo later will.
-    cp "$EK/libellekit.dylib" "$OUT/tweaks/libellekit.dylib"
 
-    # ElleKit ships all three at flags=0x0, the same "no signature" state Sileo
-    # ships in and for the same reason: it expects a jailbreak that grants trust
-    # via a trust cache and an amfid patch. This device has neither, so they are
-    # re-signed ad-hoc like every other payload here. Their own identifiers are
-    # already their file names, so ldid's default preserves them.
-    for lib in libinjector.dylib libellekit.dylib MobileSafety.dylib; do
+    # The deb itself, for finalize.sh to install on a booted device. It is the
+    # upstream package, unmodified and hash-pinned above, so ElleKit stays
+    # ElleKit's: its own control, its own maintainer, its own version in dpkg.
+    cp "$deb" "$OUT/tweaks/ellekit.deb"
+
+    # ElleKit ships its dylibs at flags=0x0. Measured on device: they load and
+    # run perfectly well that way, so this is not a requirement and an earlier
+    # comment here claiming otherwise was wrong. They are re-signed anyway, for
+    # consistency with every other payload and because a payload whose signature
+    # state we chose is one less variable when something fails to load. Their
+    # identifiers are already their file names, so ldid's default preserves them.
+    for lib in libinjector.dylib MobileSafety.dylib; do
         "$LDID" -S -Cadhoc "$OUT/tweaks/$lib" || die "could not re-sign $lib"
         codesign -dv "$OUT/tweaks/$lib" 2>&1 | grep -q 'flags=0x2(adhoc)' \
             || die "$lib is still not ad-hoc signed"
@@ -406,7 +413,7 @@ if wants tweaks; then
             || die "$lib gained entitlements while being re-signed"
         codesign -v "$OUT/tweaks/$lib" || die "$lib code-slot verification failed"
     done
-    ok "loader, hooking library and safe-mode payload staged, re-signed ad-hoc"
+    ok "loader and safe-mode payload staged and re-signed; ellekit.deb staged for finalize"
 
     # Nothing built either tweak before this: the commits that added them and
     # made them ElleKit tweaks never gave them a build or deployment path.
@@ -650,7 +657,7 @@ for p in "$OUT/Sileo.app/Sileo" "$OUT/Sileo.app/giveMeRoot" \
          "$OUT/systemhook.dylib" "$OUT/sbextissue" "$OUT/l8pair.dylib" \
          "$OUT/l8remotepairing.dylib" "$OUT/l8coreauth.dylib" \
          "$OUT/l8fdr.dylib" "$OUT/uicache" \
-         "$OUT/tweaks/libinjector.dylib" "$OUT/tweaks/libellekit.dylib" \
+         "$OUT/tweaks/libinjector.dylib" "$OUT/tweaks/ellekit.deb" \
          "$OUT/tweaks/TweakInject/l8localauth.dylib" \
          "$OUT/tweaks/TweakInject/l8persona.dylib" \
          photodiag/photodiag spawnprobe/personaalloc appreg/appreg \

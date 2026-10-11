@@ -129,62 +129,57 @@ else
     ok "shell profile installed and parsed"
 fi
 
-# The substrate-compatible names for the hooking library. Provisioning installs
-# libellekit.dylib itself as a regular file, hash-verified; these are symlinks
-# to it, which is the whole point. A tweak that links libsubstrate.dylib must
-# get the *same* image as one that links libellekit.dylib, or the process maps
-# two copies of the hooking library with separate state. They are made here and
-# not in the ramdisk because ln is not a tool the SSHRD tool set is known to
-# have, while a booted Procursus bootstrap certainly does.
+# ElleKit, installed as its own package on a booted device. This is what brings
+# the hooking library, the six substrate compatibility names and, most
+# importantly, the dpkg record: without a package declaring it, a tweak whose
+# control says Depends: mobilesubstrate cannot be configured, and PreferenceLoader
+# and most repo tweaks say exactly that.
 #
-# DynamicLibraries is the legacy tweak directory; pointing it at TweakInject is
-# what upstream's own package does, so a tweak that installs to the old path is
-# still found.
+# It is upstream's deb, unmodified and hash-pinned by fetch_payloads.sh, so
+# ElleKit stays ElleKit's in dpkg: its control, its maintainer, its version.
 #
-# Nothing registers this with dpkg. A tweak declaring Depends: mobilesubstrate
-# will therefore not install from apt, which is honest: function hooking is
-# killed by TXM on this device, so such a tweak would crash its host process
-# even if apt let it in. Revisit if that ever changes.
-say "substrate compatibility names"
-typeset -A EK_LINKS
-EK_LINKS=(
-    /var/jb/usr/lib/libsubstrate.dylib                                /var/jb/usr/lib/libellekit.dylib
-    /var/jb/usr/lib/libhooker.dylib                                   /var/jb/usr/lib/libellekit.dylib
-    /var/jb/usr/lib/libblackjack.dylib                                /var/jb/usr/lib/libellekit.dylib
-    /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate /var/jb/usr/lib/libellekit.dylib
-    /var/jb/usr/lib/TweakInject.dylib                                 /var/jb/usr/lib/ellekit/libinjector.dylib
-    /var/jb/Library/MobileSubstrate/DynamicLibraries                   /var/jb/usr/lib/TweakInject
-)
-if ! sh_dev "$RPATH; [ -f /var/jb/usr/lib/libellekit.dylib ]" >/dev/null 2>&1; then
-    skip "libellekit.dylib is not installed; run provisioning's tweaks step first"
+# It cannot happen during provisioning. dpkg needs a booted bootstrap, and the
+# compatibility names have to be symlinks, which the deb creates and the ramdisk
+# has no known ln for. Provisioning installs only the injector and the two
+# tweaks, which is enough for injection to work before this step ever runs.
+#
+# It overwrites the injector and safe-mode payload provisioning installed, with
+# upstream's own unsigned copies. Measured: those load and run perfectly well, so
+# the overwrite is harmless.
+say "ElleKit package"
+EK_DEB=payload/tweaks/ellekit.deb
+# Ask for the status, not the version. A removed package keeps its version in
+# dpkg's database while its state is "deinstall ok config-files" and every one
+# of its files is gone, so a non-empty version means "dpkg has heard of it",
+# not "it is installed".
+EK_STATE=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
+if [[ "$EK_STATE" == *"install ok installed"* ]]; then
+    skip "ellekit ${EK_STATE%% *} already installed"
+elif [[ ! -f "$EK_DEB" ]]; then
+    skip "$EK_DEB absent; run ./fetch_payloads.sh tweaks"
+    FINALIZE_INCOMPLETE=1
+elif (( CHECK_ONLY )); then
+    skip "ellekit is not installed; this step would install $EK_DEB"
+    FINALIZE_INCOMPLETE=1
 else
-    EK_WRONG=()
-    for link target in ${(kv)EK_LINKS}; do
-        actual=$(sh_dev "$RPATH; readlink '$link' 2>/dev/null" | tr -d '\r')
-        [[ "$actual" == "$target" ]] || EK_WRONG+=("$link")
+    sh_dev "$RPATH; tee /var/root/ellekit.deb >/dev/null" < "$EK_DEB" \
+        || die "could not copy $EK_DEB to the device"
+    # Its postinst runs ElleKit's own loader, which asserts and dies here
+    # because lhook already owns launchd. dpkg carries on and the install is
+    # fine, so the exit status is not the thing to judge this by: ask dpkg.
+    sh_dev "$RPATH; dpkg -i /var/root/ellekit.deb 2>&1 | tail -4" | sed 's/^/        /'
+    EK_GOT=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
+    [[ "$EK_GOT" == *"install ok installed"* ]] \
+        || die "ellekit did not register with dpkg: ${EK_GOT:-nothing}"
+    # That loader would be run again at every boot for the same assertion, so
+    # the boot script goes. dpkg -V will report it missing, which is accurate.
+    sh_dev "$RPATH; rm -f /var/jb/etc/rc.d/ellekit-loader" >/dev/null
+    for link in /var/jb/usr/lib/TweakLoader.dylib /var/jb/usr/lib/libsubstrate.dylib \
+                /var/jb/Library/MobileSubstrate/DynamicLibraries; do
+        sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 \
+            || die "$link does not resolve after installing ellekit"
     done
-    if (( ${#EK_WRONG} == 0 )); then
-        skip "all 6 names already point at the right image"
-    elif (( CHECK_ONLY )); then
-        # ${EK_WRONG[*]:t} would join first and then take one tail, naming a
-        # single file however many are wrong. Apply :t per element.
-        printf '    [=] %d of 6 names missing or wrong: %s\n' \
-            "${#EK_WRONG}" "${${(@)EK_WRONG:t}[*]}"
-        FINALIZE_INCOMPLETE=1
-    else
-        for link target in ${(kv)EK_LINKS}; do
-            sh_dev "$RPATH; mkdir -p '${link:h}' && ln -sfn '$target' '$link'" >/dev/null \
-                || die "could not link $link"
-        done
-        # Read every one back rather than trusting ln's exit status: a wrong
-        # target here is silent and only shows up as a tweak behaving oddly.
-        for link target in ${(kv)EK_LINKS}; do
-            actual=$(sh_dev "$RPATH; readlink '$link' 2>/dev/null" | tr -d '\r')
-            [[ "$actual" == "$target" ]] \
-                || die "$link points at '${actual:-nothing}', expected '$target'"
-        done
-        ok "6 names linked and read back"
-    fi
+    ok "ellekit ${EK_GOT%% *} installed; compatibility names resolve; its boot script removed"
 fi
 
 say "one-time System application registration"
