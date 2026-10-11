@@ -322,9 +322,23 @@ if wants tweaks; then
         || die "$ELLEKIT_DEB sha256 mismatch: got $got expected $ELLEKIT_SHA"
 
     rm -rf "$WORK/ellekit" && mkdir -p "$WORK/ellekit"
+    # Only the three regular files we install, named explicitly. Extracting the
+    # whole payload would also unpack the deb's symlinks, every one of which
+    # points at an absolute /var/jb path that does not exist on a Mac, and a
+    # dangling symlink under device/ breaks the copytree in
+    # scripts/device_provision.py's prepare_runtime. Naming the members also
+    # makes "we take only the loader half" a property of the extraction rather
+    # than of a later copy step.
     ( cd "$WORK/ellekit" && ar x "$deb" \
-        && xz -dc control.tar.xz | tar xf - && xz -dc data.tar.xz | tar xf - ) \
+        && xz -dc control.tar.xz | tar xf - \
+        && xz -dc data.tar.xz | tar xf - \
+            ./var/jb/usr/lib/ellekit/libinjector.dylib \
+            ./var/jb/usr/lib/ellekit/MobileSafety.dylib \
+            ./var/jb/usr/lib/libellekit.dylib ) \
         || die "could not extract $ELLEKIT_DEB"
+    # Nothing under the extraction may be a symlink, dangling or otherwise.
+    [ -z "$(find "$WORK/ellekit" -type l)" ] \
+        || die "extraction left a symlink under $WORK/ellekit"
     grep -q '^Package: ellekit$' "$WORK/ellekit/control" \
         || die "unexpected package name in $ELLEKIT_DEB"
     grep -q "^Version: ${ELLEKIT_VER}\$" "$WORK/ellekit/control" \
