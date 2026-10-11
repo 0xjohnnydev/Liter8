@@ -54,7 +54,13 @@ public struct IBECRestoreResolver: Sendable {
                 branchOffset = cursor + 16
             } else if first & 0xFC00_0000 == 0x9400_0000,
                       let helper = ARM64.directBranchTarget(instruction: first, at: cursor),
-                      helper + 16 <= UInt64(image.count),
+                      // Subtract rather than add. directBranchTarget returns the
+                      // bit pattern of a signed result, so a backward branch near
+                      // the start of the payload wraps to just below UInt64.max,
+                      // and `helper + 16` would overflow and trap. The loop guard
+                      // above already proves the image holds at least 0x3C bytes,
+                      // so this subtraction cannot underflow.
+                      helper <= UInt64(image.count) - 16,
                       (try image.readUInt32(at: helper)) == 0xD290_0013,
                       (try image.readUInt32(at: helper + 4)) == 0xF2A7_6173,
                       (try image.readUInt32(at: helper + 8)) == 0xF2C0_0053,
