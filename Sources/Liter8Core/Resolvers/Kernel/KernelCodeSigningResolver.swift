@@ -325,9 +325,12 @@ public struct KernelVMMapProtectResolver: Sendable {
         switch hit.shape {
         case .darwin255:
             // tbnz w0-15, #7 within the next three instructions.
-            guard let site = try Self.firstWord(from: skipTarget, count: 3, in: image, where: {
-                $0 & 0xfff8_0010 == 0x3738_0000
-            }) else {
+            guard let site = try Self.uniqueWord(
+                "map_disallow_new_exec decision",
+                from: skipTarget, count: 3, in: image, where: {
+                    $0 & 0xfff8_0010 == 0x3738_0000
+                }
+            ) else {
                 throw PatchfinderError.noCandidate("map_disallow_new_exec decision")
             }
             records.append(PatchRecord(
@@ -341,9 +344,12 @@ public struct KernelVMMapProtectResolver: Sendable {
             ))
         case .darwin264:
             // tb(n)z w0-15, #9 within the next eight instructions.
-            guard let site = try Self.firstWord(from: skipTarget, count: 8, in: image, where: {
-                $0 & 0xfef8_0010 == 0x3648_0000
-            }) else {
+            guard let site = try Self.uniqueWord(
+                "vm_map_protect bit-9 test",
+                from: skipTarget, count: 8, in: image, where: {
+                    $0 & 0xfef8_0010 == 0x3648_0000
+                }
+            ) else {
                 throw PatchfinderError.noCandidate("vm_map_protect bit-9 test")
             }
             let word = try image.readUInt32(at: site)
@@ -370,14 +376,27 @@ public struct KernelVMMapProtectResolver: Sendable {
         return records
     }
 
-    private static func firstWord(from start: UInt64, count: Int, in image: BinaryImage,
-                                  where matches: (UInt32) -> Bool) throws -> UInt64? {
+    /// The one matching word in the window, or nil if there is none.
+    ///
+    /// Scans the whole window rather than stopping at the first hit. Taking the
+    /// first would mean that on compiler drift placing a second matching bit
+    /// test nearby, this patches whichever happens to come earlier and reports
+    /// nothing unusual, which in a boot kernel means altering the wrong
+    /// decision. The primary gate above is unique; that says nothing about the
+    /// follow-up window.
+    private static func uniqueWord(_ name: String, from start: UInt64, count: Int,
+                                   in image: BinaryImage,
+                                   where matches: (UInt32) -> Bool) throws -> UInt64? {
+        var hits: [UInt64] = []
         for index in 0..<count {
             let at = start + UInt64(index * 4)
-            guard at + 4 <= UInt64(image.count) else { return nil }
-            if matches(try image.readUInt32(at: at)) { return at }
+            guard at + 4 <= UInt64(image.count) else { break }
+            if matches(try image.readUInt32(at: at)) { hits.append(at) }
         }
-        return nil
+        guard hits.count <= 1 else {
+            throw PatchfinderError.ambiguousCandidate(name, offsets: hits)
+        }
+        return hits.first
     }
 
     private static func encodeBranch(from source: UInt64, to target: UInt64,

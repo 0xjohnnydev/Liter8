@@ -188,6 +188,64 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         _ = try GuardedPatchApplier.apply(records, to: image)
     }
 
+    // MARK: - follow-up window uniqueness
+    //
+    // The primary gate is unique across both encodings, which says nothing
+    // about the follow-up window the decision is found in. Taking the first
+    // match there would patch whichever bit test happened to come earlier and
+    // report nothing unusual, altering the wrong decision in a boot kernel.
+
+    func testVMMapProtectRejectsTwoDisallowTestsInTheWindow() throws {
+        let gate: [UInt32] = [
+            0x120a_0008, 0x5280_00c9, 0x0a20_0129,
+            0x7100_013f, 0x7a40_0900, 0x5400_0061,
+        ]
+        let tbnz7: UInt32 = 0x3738_0008
+        // Both land inside the three-instruction window after the skip target.
+        let words = nop(2) + gate + nop(2) + [tbnz7, tbnz7] + nop(2)
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: image(words: words))) { error in
+            guard case let PatchfinderError.ambiguousCandidate(name, offsets) = error else {
+                return XCTFail("expected ambiguousCandidate, got \(error)")
+            }
+            XCTAssertEqual(name, "map_disallow_new_exec decision")
+            XCTAssertEqual(offsets.count, 2)
+            XCTAssertEqual(offsets[1] - offsets[0], 4)
+        }
+    }
+
+    func testVMMapProtectRejectsTwoBit9TestsInTheWindow() throws {
+        let gate: [UInt32] = [
+            0xF940_0836, 0x5280_00C9, 0x0A34_0129, 0x120A_0108,
+            0x7100_013F, 0x7A40_0900, 0x5400_0041,
+        ]
+        let tbz9: UInt32 = 0x3648_0068
+        // The skip target is two slots past the b.ne, so both of these are
+        // inside its eight-instruction window.
+        let words = nop(2) + gate + nop(1) + [0xD503_201F, tbz9, tbz9] + nop(3)
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: image(words: words))) { error in
+            guard case let PatchfinderError.ambiguousCandidate(name, offsets) = error else {
+                return XCTFail("expected ambiguousCandidate, got \(error)")
+            }
+            XCTAssertEqual(name, "vm_map_protect bit-9 test")
+            XCTAssertEqual(offsets.count, 2)
+        }
+    }
+
+    /// A second matching test outside the window is not ambiguity, so the
+    /// bound still has to mean something after the change.
+    func testVMMapProtectAcceptsASecondDisallowTestOutsideTheWindow() throws {
+        let gate: [UInt32] = [
+            0x120a_0008, 0x5280_00c9, 0x0a20_0129,
+            0x7100_013f, 0x7a40_0900, 0x5400_0061,
+        ]
+        let tbnz7: UInt32 = 0x3738_0008
+        // Window is three instructions, so the fourth slot is out of reach.
+        let words = nop(2) + gate + nop(2) + [tbnz7] + nop(2) + [tbnz7] + nop(2)
+        let records = try KernelVMMapProtectResolver().resolve(in: image(words: words))
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[1].offset, 0x4000 + UInt64((2 + 6 + 2) * 4))
+    }
+
     // MARK: - opt-in gate
 
     func testCompositeRecordsAreEmptyWithoutAProfileOptIn() throws {
