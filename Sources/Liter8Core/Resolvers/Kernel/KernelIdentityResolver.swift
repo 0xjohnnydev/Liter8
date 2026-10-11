@@ -31,7 +31,13 @@ struct KernelIdentityResolver: Sendable {
         // anchor landed on something other than the paired version strings.
         let platforms = try sites.map { try Self.platformToken(in: image, prefixOffset: $0) }
         guard let platform = platforms.first, platforms.allSatisfy({ $0 == platform }) else {
-            throw PatchfinderError.ambiguousAnchor(Self.prefix, count: sites.count)
+            // Not ambiguousAnchor: the anchor count is exactly the expected two.
+            // What failed is the agreement between the tokens, so say that
+            // rather than reporting "two matches" for a two-match requirement.
+            throw PatchfinderError.noCandidate(
+                "paired kernel version strings disagree on the SoC token: "
+                    + platforms.joined(separator: ", ")
+            )
         }
 
         let original = Data((Self.prefix + platform).utf8)
