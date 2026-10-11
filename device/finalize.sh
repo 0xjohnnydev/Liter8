@@ -166,8 +166,10 @@ else
     if (( ${#EK_WRONG} == 0 )); then
         skip "all 6 names already point at the right image"
     elif (( CHECK_ONLY )); then
+        # ${EK_WRONG[*]:t} would join first and then take one tail, naming a
+        # single file however many are wrong. Apply :t per element.
         printf '    [=] %d of 6 names missing or wrong: %s\n' \
-            "${#EK_WRONG}" "${EK_WRONG[*]:t}"
+            "${#EK_WRONG}" "${${(@)EK_WRONG:t}[*]}"
         FINALIZE_INCOMPLETE=1
     else
         for link target in ${(kv)EK_LINKS}; do
