@@ -129,6 +129,62 @@ else
     ok "shell profile installed and parsed"
 fi
 
+# The substrate-compatible names for the hooking library. Provisioning installs
+# libellekit.dylib itself as a regular file, hash-verified; these are symlinks
+# to it, which is the whole point. A tweak that links libsubstrate.dylib must
+# get the *same* image as one that links libellekit.dylib, or the process maps
+# two copies of the hooking library with separate state. They are made here and
+# not in the ramdisk because ln is not a tool the SSHRD tool set is known to
+# have, while a booted Procursus bootstrap certainly does.
+#
+# DynamicLibraries is the legacy tweak directory; pointing it at TweakInject is
+# what upstream's own package does, so a tweak that installs to the old path is
+# still found.
+#
+# Nothing registers this with dpkg. A tweak declaring Depends: mobilesubstrate
+# will therefore not install from apt, which is honest: function hooking is
+# killed by TXM on this device, so such a tweak would crash its host process
+# even if apt let it in. Revisit if that ever changes.
+say "substrate compatibility names"
+typeset -A EK_LINKS
+EK_LINKS=(
+    /var/jb/usr/lib/libsubstrate.dylib                                /var/jb/usr/lib/libellekit.dylib
+    /var/jb/usr/lib/libhooker.dylib                                   /var/jb/usr/lib/libellekit.dylib
+    /var/jb/usr/lib/libblackjack.dylib                                /var/jb/usr/lib/libellekit.dylib
+    /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate /var/jb/usr/lib/libellekit.dylib
+    /var/jb/usr/lib/TweakInject.dylib                                 /var/jb/usr/lib/ellekit/libinjector.dylib
+    /var/jb/Library/MobileSubstrate/DynamicLibraries                   /var/jb/usr/lib/TweakInject
+)
+if ! sh_dev "$RPATH; [ -f /var/jb/usr/lib/libellekit.dylib ]" >/dev/null 2>&1; then
+    skip "libellekit.dylib is not installed; run provisioning's tweaks step first"
+else
+    EK_WRONG=()
+    for link target in ${(kv)EK_LINKS}; do
+        actual=$(sh_dev "$RPATH; readlink '$link' 2>/dev/null" | tr -d '\r')
+        [[ "$actual" == "$target" ]] || EK_WRONG+=("$link")
+    done
+    if (( ${#EK_WRONG} == 0 )); then
+        skip "all 6 names already point at the right image"
+    elif (( CHECK_ONLY )); then
+        printf '    [=] %d of 6 names missing or wrong: %s\n' \
+            "${#EK_WRONG}" "${EK_WRONG[*]:t}"
+        FINALIZE_INCOMPLETE=1
+    else
+        for link target in ${(kv)EK_LINKS}; do
+            sh_dev "$RPATH; mkdir -p '${link:h}' && ln -sfn '$target' '$link'" >/dev/null \
+                || die "could not link $link"
+        done
+        # Read every one back rather than trusting ln's exit status: a wrong
+        # target here is silent and only shows up as a tweak behaving oddly.
+        for link target in ${(kv)EK_LINKS}; do
+            actual=$(sh_dev "$RPATH; readlink '$link' 2>/dev/null" | tr -d '\r')
+            [[ "$actual" == "$target" ]] \
+                || die "$link points at '${actual:-nothing}', expected '$target'"
+        done
+        ok "6 names linked and read back"
+    fi
+fi
+
 say "one-time System application registration"
 if sh_dev "$RPATH; [ -f '$REGISTRATION_MARKER' ]" >/dev/null 2>&1; then
     skip "already completed"
