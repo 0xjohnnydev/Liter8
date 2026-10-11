@@ -114,9 +114,15 @@ static int file_exists(const char *path) {
 }
 
 /* Guard #3. With no payload present there is nothing to inject, and injecting kSelf alone
- * would spread the interposer with no effect. */
+ * would spread the interposer with no effect.
+ *
+ * Both payloads count, not just the loader. The icon payload is inserted directly and
+ * works on its own, so a device with it installed and no ElleKit still has a reason to
+ * inject: measured on n104, where provisioning installs systemhook.dylib but nothing
+ * installs /var/jb/usr/lib/TweakLoader.dylib, so gating on the loader alone left
+ * iconservicesagent unpatched and every rootless icon blank. */
 static int any_payload_exists(void) {
-    return file_exists(kLoader);
+    return file_exists(kLoader) || file_exists(kIcons);
 }
 
 static int name_in(const char **list, const char *name) {
