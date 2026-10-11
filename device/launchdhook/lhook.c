@@ -42,6 +42,18 @@ static const char *kSelf       = LHOOK_SELF_PATH;
 #define LHOOK_PAYLOAD_C "/var/jb/usr/lib/TweakLoader.dylib"
 #endif
 static const char *kLoader = LHOOK_PAYLOAD_C;
+
+/* The rootless-icon payload (systemhook_icon.c), on the System volume for the
+ * same reason as kSelf. It is inserted directly rather than loaded through
+ * TweakLoader because iconservicesagent needs its read token before the icon
+ * service renders anything, and because it is already provisioned and verified
+ * by sshrd_provision.sh. It acts only in iconservicesagent and returns after
+ * one name comparison everywhere else, so inserting it costs one strcmp per
+ * injected spawn. */
+#ifndef LHOOK_PAYLOAD_A
+#define LHOOK_PAYLOAD_A "/usr/lib/systemhook.dylib"
+#endif
+static const char *kIcons = LHOOK_PAYLOAD_A;
 /* Sandbox grants the parent mints for an injected child, one environment
  * variable each. Read lets a sandboxed process open /private/var/jb; the
  * container profile checks mapping a dylib executable separately
@@ -264,8 +276,9 @@ static void *marker_thread(void *unused) {
 
 /* ------------------------------------------------------------ spawn interposition */
 
-/* Insert only the System-volume bootstrap. Data-volume libraries must wait
- * until the new process has consumed its sandbox extension. */
+/* Insert only System-volume images. Data-volume libraries must wait until the
+ * new process has consumed its sandbox extension, which is why TweakLoader is
+ * dlopened by our constructor instead of being inserted here. */
 static const char kInsertKey[] = "DYLD_INSERT_LIBRARIES=";
 #define INSERT_KEY_LEN (sizeof(kInsertKey) - 1)
 
@@ -282,7 +295,7 @@ static int grant_key(const char *entry) {
 
 static int own_library(const char *path) {
     return !strcmp(path, kSelf) || !strcmp(path, kLoader) ||
-        !strcmp(path, "/usr/lib/lhook");
+        !strcmp(path, kIcons) || !strcmp(path, "/usr/lib/lhook");
 }
 
 /* True if the caller's environment already carries one of our keys, so a
@@ -312,14 +325,22 @@ static int make_child_env(char *const input[], int inject, struct child_env *out
         int g = grant_key(v);
         if (g >= 0 && !inherited[g]) inherited[g] = v + strlen(kGrants[g].key);
     }
-    size_t capacity = strlen(kSelf) + (existing ? strlen(existing) : 0) + 2;
+    size_t capacity = strlen(kSelf) + strlen(kIcons)
+        + (existing ? strlen(existing) : 0) + 3;
     char *libraries = calloc(1, capacity);
     char *copy = existing ? strdup(existing) : NULL;
     out->values = calloc(count + 2 + GRANT_COUNT, sizeof(char *));
     if (!libraries || (existing && !copy) || !out->values) {
         free(libraries); free(copy); return ENOMEM;
     }
-    if (inject) strcpy(libraries, kSelf);
+    if (inject) {
+        /* kSelf first so its constructor consumes the sandbox extension before
+         * any other inserted image runs. Only insert the icon payload when it
+         * is actually present: handing dyld a path that does not resolve is the
+         * one mistake here that breaks every spawn on the system. */
+        strcpy(libraries, kSelf);
+        if (file_exists(kIcons)) { strcat(libraries, ":"); strcat(libraries, kIcons); }
+    }
     char *cursor = NULL;
     for (char *part = copy ? strtok_r(copy, ":", &cursor) : NULL;
          part; part = strtok_r(NULL, ":", &cursor)) {
