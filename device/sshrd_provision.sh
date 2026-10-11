@@ -1415,6 +1415,12 @@ else
     tweak_state=MISSING
 fi
 note "tweak loader set" "$tweak_state"
+# ENABLED is a failure for these two but not for .lhook_enabled above, and the
+# difference is real rather than an oversight. The injection marker is session
+# bound: it carries a boot-session UUID the guard compares, so a leftover one is
+# inert. These two are plain existence markers with nothing to compare, so a
+# leftover one is live on the next boot. Nothing neutralises them, which is why
+# a provision sets them aside and why finding one here is a genuine anomaly.
 note "l8localauth first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-localauth ] && echo ENABLED || echo dormant' | tr -d '\r')"
 note "l8persona first boot" "$(sh_dev '[ -e /mnt2/jb/.liter8-persona ] && echo ENABLED || echo dormant' | tr -d '\r')"
 
