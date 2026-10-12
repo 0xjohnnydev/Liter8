@@ -33,21 +33,17 @@
  *   - A method swizzle in installd / installcoordinationd (see the plist), so
  *     it needs no code-signing patch.
  *
- * Known imprecision, not yet fixed. The fallback cannot tell "the client named
- * no persona" from "the client named one that does not exist": it keys on the
- * stock call having failed while MobileInstallation knows no personal persona,
- * and on this hardware the second term is always true once the marker is armed.
- * So a client asking for an explicit nonexistent persona has its identity
- * rewritten to the primary container persona and gets success, where the honest
- * answer is the original error. Unlikely to be reached on a single-user iPhone,
- * since nothing in the normal install path names a persona, but it is wrong.
+ * What the identity names is checked, not just that resolution failed. Keying
+ * only on "failed while MobileInstallation knows no personal persona" rewrote
+ * every failure, because on this hardware the second term is permanently true
+ * once the marker is armed, so a client asking for a persona of its own got
+ * success and a persona it never requested. See persona_is_substitutable for
+ * the two named values that are substituted and the measurements behind them.
  *
- * Narrowing it needs one fact this code cannot read: whether the placeholder
- * lands in the identity before it is constructed or inside the stock resolve.
- * PersonalPersonaPlaceholderString is a string in InstalledContentLibrary and
- * not an exported symbol, so it cannot be looked up the way
- * CONTAINER_PERSONA_PRIMARY is. The log line below carries personaUniqueString
- * from either side of the stock call so one armed install settles it.
+ * Measured on n104/24B5099f, one installcoordinationd start with the marker
+ * armed: 55 failures, 50 naming the placeholder and 5 naming the persona the
+ * first pass injected, and none rejected. Nothing in normal operation asks for
+ * a persona of its own, which is why this was never visible in a log.
  *
  * Install as an ElleKit tweak: l8persona.dylib and l8persona.plist in
  * /var/jb/usr/lib/TweakInject. Build: device/personafix/build.sh.
@@ -80,6 +76,13 @@
 #endif
 #ifndef L8_PRIMARY_SYMBOL
 #define L8_PRIMARY_SYMBOL "CONTAINER_PERSONA_PRIMARY"
+#endif
+/* The value MobileInstallation puts in an identity that named no persona of its
+ * own. Its name is a string in InstalledContentLibrary but not an exported
+ * symbol, so it cannot be looked up the way CONTAINER_PERSONA_PRIMARY is; this
+ * is its literal value, read from the identities in the log below. */
+#ifndef L8_PERSONA_PLACEHOLDER
+#define L8_PERSONA_PLACEHOLDER "PersonalPersonaPlaceholderString"
 #endif
 
 typedef BOOL (*ResolveIMP)(id, SEL, NSError **);
@@ -122,6 +125,37 @@ static NSString *string_property(id object, const char *name) {
     return [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
 }
 
+/* Whether this identity is asking for one of the two personas this exists to
+ * substitute, rather than for some specific persona of its own.
+ *
+ * Measured on n104/24B5099f with the marker armed, over 60 failures in one
+ * installcoordinationd start, in exactly two shapes:
+ *
+ *   named=PersonalPersonaPlaceholderString
+ *     "Failed to resolve persona [<bundle>/P/[system-defined]]"
+ *     The client named nothing, MobileInstallation substituted the placeholder,
+ *     and usermanagerd lists no personal persona to resolve it to. The case
+ *     this tweak was written for.
+ *
+ *   named=com.apple.containermanager.primary-persona
+ *     "Client provided invalid persona for <bundle>"
+ *     The second pass over what the first one produced: the identity already
+ *     carries the persona we injected and the stock code rejects it. The same
+ *     bundles appear in both shapes, so refusing this one would make the first
+ *     pass succeed and the next fail.
+ *
+ * Anything else is a client asking for a specific persona, and a specific
+ * persona that does not resolve is an honest failure to pass through. That was
+ * the gap: keying only on "resolution failed while no personal persona exists"
+ * meant any request at all got rewritten, because on this hardware the second
+ * half of that condition is permanently true. Rejections are logged, so a build
+ * that changes these values shows up as lost fallbacks rather than silence. */
+static BOOL persona_is_substitutable(NSString *named, NSString *primary) {
+    if (![named isKindOfClass:[NSString class]]) return NO;
+    if ([named isEqualToString:@L8_PERSONA_PLACEHOLDER]) return YES;
+    return primary != nil && [named isEqualToString:primary];
+}
+
 static BOOL l8_resolve(id self, SEL sel, NSError **error) {
     /* Read before the stock call, because that call is what may substitute a
      * persona. The pair settles the one open question about this hook: whether
@@ -144,6 +178,13 @@ static BOOL l8_resolve(id self, SEL sel, NSError **error) {
     NSString *named_after = string_property(self, "personaUniqueString");
     NSString *bundle = string_property(self, "bundleID");
     NSString *persona = primary_container_persona();
+    if (!persona_is_substitutable(named_after, persona)) {
+        os_log_error(OS_LOG_DEFAULT, "l8persona: passing through bundle=%{public}@ "
+                     "named=%{public}@ stock-error=%{public}@", bundle, named_after,
+                     native.localizedDescription);
+        if (error) *error = native;
+        return ok;
+    }
     SEL setPersona = sel_registerName("setPersonaUniqueString:");
     SEL setResolved = sel_registerName("setIsResolved:");
     if (persona == nil || ![self respondsToSelector:setPersona] ||
@@ -271,12 +312,34 @@ int main(void) {
         gPrimary = @"personal-uuid";
         error = nil;
         if ([identity resolvePersonaWithError:&error] || identity.isResolved) return 3;
-        // No personal persona: falls back to the primary container persona.
+        // No personal persona, and the identity carries the placeholder that
+        // MobileInstallation substitutes when the client named nothing: falls
+        // back to the primary container persona. This is the first of the two
+        // shapes measured on device.
         gPrimary = nil;
+        identity.personaUniqueString = @L8_PERSONA_PLACEHOLDER;
         // A successful fallback must clear an error left by an earlier call.
         error = [NSError errorWithDomain:@"stale" code:1 userInfo:nil];
         if (![identity resolvePersonaWithError:&error] || error != nil) return 4;
         if (!identity.isResolved || ![identity.personaUniqueString isEqualToString:@"TestPrimaryPersona"]) return 5;
+
+        // The second measured shape: the identity already names the persona the
+        // first pass injected and the stock code rejects it. Refusing this one
+        // would make the first pass succeed and the next fail.
+        L8TestAppIdentity *second = [L8TestAppIdentity new];
+        second.personaUniqueString = @"TestPrimaryPersona";
+        error = nil;
+        if (![second resolvePersonaWithError:&error] || error != nil) return 11;
+        if (!second.isResolved) return 12;
+
+        // A client asking for a specific persona of its own keeps its failure,
+        // which is the whole point of the narrowing.
+        L8TestAppIdentity *explicit = [L8TestAppIdentity new];
+        explicit.personaUniqueString = @"some-other-persona";
+        error = nil;
+        if ([explicit resolvePersonaWithError:&error]) return 13;
+        if (error.code != 0xbf || explicit.isResolved) return 14;
+        if (![explicit.personaUniqueString isEqualToString:@"some-other-persona"]) return 15;
 
         // What the log line reports. A nil persona and a named one have to be
         // distinguishable, or the measurement this logging exists for cannot be
@@ -292,9 +355,9 @@ int main(void) {
         if (string_property(unnamed, "personaUniqueString") != nil) return 10;
 
         [[NSFileManager defaultManager] removeItemAtPath:marker error:nil];
-        puts("PASS: stock result kept with marker off or a personal persona; "
-             "falls back to CONTAINER_PERSONA_PRIMARY otherwise; "
-             "named and unnamed personas are distinguishable in the log");
+        puts("PASS: stock result kept with marker off, with a personal persona, "
+             "or when the client named a persona of its own; both measured "
+             "shapes fall back to CONTAINER_PERSONA_PRIMARY");
         return 0;
     }
 }
