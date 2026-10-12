@@ -33,6 +33,22 @@
  *   - A method swizzle in installd / installcoordinationd (see the plist), so
  *     it needs no code-signing patch.
  *
+ * Known imprecision, not yet fixed. The fallback cannot tell "the client named
+ * no persona" from "the client named one that does not exist": it keys on the
+ * stock call having failed while MobileInstallation knows no personal persona,
+ * and on this hardware the second term is always true once the marker is armed.
+ * So a client asking for an explicit nonexistent persona has its identity
+ * rewritten to the primary container persona and gets success, where the honest
+ * answer is the original error. Unlikely to be reached on a single-user iPhone,
+ * since nothing in the normal install path names a persona, but it is wrong.
+ *
+ * Narrowing it needs one fact this code cannot read: whether the placeholder
+ * lands in the identity before it is constructed or inside the stock resolve.
+ * PersonalPersonaPlaceholderString is a string in InstalledContentLibrary and
+ * not an exported symbol, so it cannot be looked up the way
+ * CONTAINER_PERSONA_PRIMARY is. The log line below carries personaUniqueString
+ * from either side of the stock call so one armed install settles it.
+ *
  * Install as an ElleKit tweak: l8persona.dylib and l8persona.plist in
  * /var/jb/usr/lib/TweakInject. Build: device/personafix/build.sh.
  */
@@ -94,26 +110,63 @@ static NSString *primary_container_persona(void) {
     return [NSString stringWithUTF8String:*symbol];
 }
 
+/* Read a string-valued accessor by name. For logging only, so a class without
+ * it must not be fatal: MIAppIdentity carries bundleID and personaUniqueString
+ * (both appear in InstalledContentLibrary, alongside
+ * -[MIAppIdentity _doInitWithBundleID:personaUniqueString:location:]), but
+ * neither is a published interface. */
+static NSString *string_property(id object, const char *name) {
+    SEL selector = sel_registerName(name);
+    if (![object respondsToSelector:selector]) return nil;
+    id value = ((id (*)(id, SEL))objc_msgSend)(object, selector);
+    return [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
+}
+
 static BOOL l8_resolve(id self, SEL sel, NSError **error) {
+    /* Read before the stock call, because that call is what may substitute a
+     * persona. The pair settles the one open question about this hook: whether
+     * MobileInstallation puts PersonalPersonaPlaceholderString in the identity
+     * before constructing it or inside resolvePersonaWithError:.
+     *
+     * It matters because the fallback below cannot currently tell "the client
+     * named no persona" from "the client named one that does not exist", and
+     * only the first should be rewritten. Which value carries the placeholder
+     * decides how to narrow it, and the placeholder is not an exported symbol
+     * so it cannot simply be looked up. */
+    NSString *named_before = string_property(self, "personaUniqueString");
     NSError *native = nil;
     BOOL ok = gOriginalResolve(self, sel, &native);
     if (ok || !marker_enabled() || !no_personal_persona()) {
         if (error) *error = native;
         return ok;
     }
+    /* Read before the mutation further down overwrites it. */
+    NSString *named_after = string_property(self, "personaUniqueString");
+    NSString *bundle = string_property(self, "bundleID");
     NSString *persona = primary_container_persona();
     SEL setPersona = sel_registerName("setPersonaUniqueString:");
     SEL setResolved = sel_registerName("setIsResolved:");
     if (persona == nil || ![self respondsToSelector:setPersona] ||
         ![self respondsToSelector:setResolved]) {
+        /* Silent before. A nil CONTAINER_PERSONA_PRIMARY left the stock failure
+         * in place and logged nothing, so a boot where the fallback could not
+         * run looked exactly like one where it was never needed. */
+        os_log_error(OS_LOG_DEFAULT, "l8persona: fallback unavailable bundle=%{public}@ "
+                     "primary=%{public}@ setPersona=%d setResolved=%d",
+                     bundle, persona, [self respondsToSelector:setPersona],
+                     [self respondsToSelector:setResolved]);
         if (error) *error = native;
         return ok;
     }
     ((void (*)(id, SEL, id))objc_msgSend)(self, setPersona, persona);
     ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setResolved, YES);
     if (error) *error = nil;
-    os_log_error(OS_LOG_DEFAULT, "l8persona: no personal persona, resolved %{public}@ to %{public}@ "
-                 "(was: %{public}@)", [self description], persona, native.localizedDescription);
+    /* [self description] used to stand in for the identity here, but
+     * MIAppIdentity defines no description and NSObject's prints the address
+     * only, so the log could not answer what the identity actually named. */
+    os_log_error(OS_LOG_DEFAULT, "l8persona: fallback bundle=%{public}@ named-before=%{public}@ "
+                 "named-after=%{public}@ resolved-to=%{public}@ stock-error=%{public}@",
+                 bundle, named_before, named_after, persona, native.localizedDescription);
     return YES;
 }
 
@@ -186,6 +239,7 @@ static id gPrimary;
 
 @interface L8TestAppIdentity : NSObject
 @property (copy, nonatomic) NSString *personaUniqueString;
+@property (copy, nonatomic) NSString *bundleID;
 @property (nonatomic) BOOL isResolved;
 @end
 @implementation L8TestAppIdentity
@@ -193,6 +247,9 @@ static id gPrimary;
     if (error) *error = [NSError errorWithDomain:@"MIInstallerErrorDomain" code:0xbf userInfo:nil];
     return NO;
 }
+/* Covers the isKindOfClass guard in string_property: an accessor of the right
+ * name whose value is not a string must read as absent, not be returned. */
+- (id)location { return @42; }
 @end
 
 int main(void) {
@@ -220,9 +277,24 @@ int main(void) {
         error = [NSError errorWithDomain:@"stale" code:1 userInfo:nil];
         if (![identity resolvePersonaWithError:&error] || error != nil) return 4;
         if (!identity.isResolved || ![identity.personaUniqueString isEqualToString:@"TestPrimaryPersona"]) return 5;
+
+        // What the log line reports. A nil persona and a named one have to be
+        // distinguishable, or the measurement this logging exists for cannot be
+        // read back off the device.
+        L8TestAppIdentity *named = [L8TestAppIdentity new];
+        named.personaUniqueString = @"explicit-nonexistent";
+        named.bundleID = @"com.example.app";
+        if (![string_property(named, "personaUniqueString") isEqualToString:@"explicit-nonexistent"]) return 6;
+        if (![string_property(named, "bundleID") isEqualToString:@"com.example.app"]) return 7;
+        if (string_property(named, "nosuchaccessor") != nil) return 8;
+        if (string_property(named, "location") != nil) return 9;
+        L8TestAppIdentity *unnamed = [L8TestAppIdentity new];
+        if (string_property(unnamed, "personaUniqueString") != nil) return 10;
+
         [[NSFileManager defaultManager] removeItemAtPath:marker error:nil];
         puts("PASS: stock result kept with marker off or a personal persona; "
-             "falls back to CONTAINER_PERSONA_PRIMARY otherwise");
+             "falls back to CONTAINER_PERSONA_PRIMARY otherwise; "
+             "named and unnamed personas are distinguishable in the log");
         return 0;
     }
 }
