@@ -32,7 +32,8 @@ final class MobileActivationDBoundsTests: XCTestCase {
 
     private func candidates(_ image: BinaryImage, methodOffset: UInt64 = 0) throws -> Int {
         try MobileActivationDResolver()
-            .findStateLoadCandidates(in: image, methodOffset: methodOffset)
+            .findStateLoadCandidates(in: image, methodOffset: methodOffset,
+                                     within: 0..<UInt64(image.count))
             .count
     }
 
@@ -142,11 +143,53 @@ final class MobileActivationDBoundsTests: XCTestCase {
                 (0x60, legacyBody),
                 (0x100, dictionaryBody),
             ]),
-            methodOffset: 0
+            methodOffset: 0,
+            within: 0..<0x200
         )
         XCTAssertEqual(found.count, 1, "one gate matching both shapes is one candidate")
         XCTAssertEqual(found.first?.kind, .legacy)
         XCTAssertEqual(found.first?.load, 0x60)
+    }
+
+    // MARK: - the fallback body stays in executable code
+    //
+    // The scan window used to be bounded by the image, so a migration TBZ
+    // pointing at an adjacent mapped non-executable section still inside the
+    // 0x300-byte window was matched against fourteen instruction-shaped data
+    // words. resolveDictionaryFallback would then branch the gate into that
+    // data and rewrite three of its words. The range is passed in rather than
+    // derived from a Mach-O here, so these place the body outside it directly;
+    // that the callers pass the executable range holding the method is checked
+    // by resolving the real binaries.
+
+    func testTheDictionaryBodyOutsideTheExecutableRangeIsRejected() throws {
+        let image = buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x100, dictionaryBody)])
+        // The body starts at 0x100 and needs 0x38 bytes, so a range ending at
+        // 0x100 puts all of it past the end of the code.
+        XCTAssertEqual(
+            try MobileActivationDResolver().findStateLoadCandidates(
+                in: image, methodOffset: 0, within: 0..<0x100
+            ).count,
+            0
+        )
+        // Ending part way into the body is just as unacceptable as ending before it.
+        XCTAssertEqual(
+            try MobileActivationDResolver().findStateLoadCandidates(
+                in: image, methodOffset: 0, within: 0..<0x130
+            ).count,
+            0
+        )
+    }
+
+    /// The same image with a range that does contain the whole body, so the
+    /// test above cannot pass for a locator that stopped matching entirely.
+    func testTheSameBodyInsideTheExecutableRangeIsFound() throws {
+        let image = buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x100, dictionaryBody)])
+        let found = try MobileActivationDResolver().findStateLoadCandidates(
+            in: image, methodOffset: 0, within: 0..<0x138
+        )
+        XCTAssertEqual(found.map(\.kind), [.dictionaryFallback])
+        XCTAssertEqual(found.first?.fallback, 0x100)
     }
 
     /// Neither half of the test above can pass because one shape quietly
@@ -154,14 +197,16 @@ final class MobileActivationDBoundsTests: XCTestCase {
     func testEachShapeIsFoundOnItsOwn() throws {
         let legacy = try MobileActivationDResolver().findStateLoadCandidates(
             in: buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x60, legacyBody)]),
-            methodOffset: 0
+            methodOffset: 0,
+            within: 0..<0x200
         )
         XCTAssertEqual(legacy.map(\.kind), [.legacy])
         XCTAssertEqual(legacy.first?.load, 0x60)
 
         let dictionary = try MobileActivationDResolver().findStateLoadCandidates(
             in: buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x100, dictionaryBody)]),
-            methodOffset: 0
+            methodOffset: 0,
+            within: 0..<0x200
         )
         XCTAssertEqual(dictionary.map(\.kind), [.dictionaryFallback])
         XCTAssertEqual(dictionary.first?.fallback, 0x100)
