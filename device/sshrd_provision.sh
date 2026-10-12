@@ -847,6 +847,20 @@ for entry in $TWEAK_SET; do
 done
 [ "$tweak_any" = 1 ] || TWEAK_PAYLOAD=none
 
+# The deb is the oracle for the post-finalize form of the three paths dpkg owns,
+# so it has to be the pinned archive and not whatever is sitting in a mutable
+# work directory. Without this, replacing payload/tweaks/ellekit.deb made the
+# check agree with a device carrying the same replaced bytes. Same pin
+# fetch_payloads.sh verifies on download and finalize.sh verifies before
+# installing; checked here at the top because the comparison itself runs inside
+# a command substitution, where a die would only end the subshell.
+. ./ellekit.pin
+if [ -f payload/tweaks/ellekit.deb ]; then
+    ek_got=$(shasum -a 256 payload/tweaks/ellekit.deb | awk '{print $1}')
+    [ "$ek_got" = "$ELLEKIT_SHA" ] \
+        || die "payload/tweaks/ellekit.deb does not match the pinned digest; got $ek_got"
+fi
+
 # The package members the table refers to, deduplicated. Derived from TWEAK_SET
 # so the extraction below and the comparisons above cannot ask for different
 # files.
@@ -988,6 +1002,13 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     TWEAK_AT=$(tweak_stage)
     [ "$TWEAK_AT" = finalized ] \
         && skip "ellekit's deb is installed; its three files are left to dpkg"
+    # Before the first write, not after the last. Any failure in the loop below
+    # exits the script, so disarming afterwards left an armed marker over a
+    # half-replaced tweak set: the next lhookctl enable would activate whatever
+    # mixture of old and new files the run happened to stop at. The promise is
+    # that a provisioned device is inert, and that has to hold on the failure
+    # paths too.
+    set_aside_tweak_markers
     for entry in $TWEAK_SET; do
         tweak_fields "$entry"
         src=$tweak_src
@@ -1010,7 +1031,6 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
         ok "/var/jb${dst#/mnt2/jb} ($mode)"
     done
 
-    set_aside_tweak_markers
     ok "loader in place; injection needs lhookctl enable, each tweak needs its marker"
 fi
 
@@ -1369,14 +1389,25 @@ tweak_entry_fault() {
     [ -n "$tf_pkg" ] \
         || { echo "content, and no ellekit.deb here to compare the package form"; return; }
     [ "$tf_got" = "$tf_pkg" ] || { echo content; return; }
-    # Whether it is a link was decided at the top, because that is what chose
-    # the path just read. The link text itself is not compared here: readlink is
-    # not a tool this ramdisk is known to have. finalize.sh does compare it, on
-    # a booted device where readlink exists.
     case "$tweak_pkg" in
         pkglink=*)
             [ "$tf_islink" = 1 ] \
-                || echo "the package ships a symlink here, found $tf_mode" ;;
+                || { echo "the package ships a symlink here, found $tf_mode"; return; }
+            # Where the link actually points, not just that it is one. Reading
+            # the declared canonical path rather than following the link fixed
+            # the wrong-root problem but stopped checking the link at all: a
+            # loader repointed at MobileSafety.dylib still produced the expected
+            # injector hash and passed, while the next normal boot followed the
+            # wrong link and loaded no injector.
+            #
+            # Taken from the `ls -ln` already fetched above, which prints
+            # "... name -> target" for a symlink, so this needs no readlink;
+            # that tool is not part of this ramdisk's known set.
+            tf_target=${tf_ls#*" -> "}
+            [ "$tf_target" != "$tf_ls" ] \
+                || { echo "could not read the link target from: $tf_ls"; return; }
+            [ "$tf_target" = "/var/jb${tweak_pkg#*=./var/jb}" ] \
+                || echo "link points at $tf_target" ;;
     esac
 }
 mkdir -p payload/.work

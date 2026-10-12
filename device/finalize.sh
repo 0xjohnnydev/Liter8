@@ -268,6 +268,36 @@ ek_package_complaints() {
     sh_dev "$RPATH; dpkg -V ellekit 2>&1" | tr -d '\r' \
         | grep -v "^missing[[:space:]]*$EK_BOOT_SCRIPT\$" \
         | grep -v '^[[:space:]]*$' || true
+    ek_mode_complaints
+}
+
+# Modes and owners of the package's regular files, which dpkg -V does not look
+# at: its only functional check is the stored MD5 digest, so `chmod 000` on
+# ellekit/libinjector.dylib left every content and link check passing while no
+# non-root process could load the injector. Measured on device before this
+# existed: finalize --check reported complete and exited 0.
+#
+# The expected modes come out of the pinned archive rather than a list written
+# here, so they cannot drift from the package. Regular files only: dpkg owns
+# the symlinks' targets and ek_broken_links already covers the links.
+ek_mode_complaints() {
+    [[ -f "$EK_DEB" ]] || return 0
+    # Not `path`: in zsh that name is tied to $PATH, so declaring it local here
+    # emptied PATH inside the function and ar and xz stopped resolving.
+    local line want member got
+    tar tvf <(xz -dc < <(ar p "$EK_DEB" data.tar.xz)) 2>/dev/null \
+        | while read -r line; do
+            want=${line%% *}
+            [[ "$want" == -* ]] || continue          # regular files only
+            member=${line##* }
+            # stdin closed: ssh reads stdin, and this loop's stdin is the pipe
+            # from tar, so without this the first member's ssh swallowed the
+            # rest of the archive listing and the loop checked exactly one file.
+            got=$(sh_dev "$RPATH; ls -ln '${member#.}' 2>/dev/null" < /dev/null | tr -d '\r')
+            [[ -n "$got" ]] || { print -r -- "absent ${member#.}"; continue; }
+            [[ "${${got%% *}%[.+]}" == "$want" && "${${(z)got}[3]}" == 0 ]] \
+                || print -r -- "mode/owner ${member#.} is ${${(z)got}[1]} uid ${${(z)got}[3]}, expected $want uid 0"
+        done
 }
 
 # Ask for the status, not the version. A removed package keeps its version in
@@ -288,7 +318,7 @@ elif (( EK_INSTALLED )); then
     if ek_boot_script_present || (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
         if (( CHECK_ONLY )); then
             printf '    [=] ellekit %s installed but incomplete: %s\n' "$ELLEKIT_VER" \
-                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+dpkg -V: ${EK_COMPLAINTS[*]}}"
+                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+package files: ${EK_COMPLAINTS[*]}}"
             FINALIZE_INCOMPLETE=1
         else
             ek_divert_boot_script
@@ -302,7 +332,7 @@ elif (( EK_INSTALLED )); then
                 # depends on them.
                 (( ${#EK_BAD} )) && printf '    [!] ellekit is installed but these do not resolve: %s\n' \
                     "${${(@)EK_BAD:t}[*]}"
-                (( ${#EK_COMPLAINTS} )) && printf '    [!] dpkg -V disagrees with the installed files: %s\n' \
+                (( ${#EK_COMPLAINTS} )) && printf '    [!] the package files disagree with the pinned archive: %s\n' \
                     "${EK_COMPLAINTS[*]}"
                 printf '    [!] reinstall it: dpkg -i /var/root/ellekit.deb on the device\n'
                 FINALIZE_INCOMPLETE=1
@@ -370,7 +400,7 @@ else
     EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
     EK_COMPLAINTS=(${EK_COMPLAINTS:#})
     (( ${#EK_COMPLAINTS} == 0 )) \
-        || die "dpkg -V disagrees with the files just installed: ${EK_COMPLAINTS[*]}"
+        || die "the files just installed disagree with the pinned archive: ${EK_COMPLAINTS[*]}"
     ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 
