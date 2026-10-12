@@ -400,11 +400,16 @@ if [ "$EK_FETCHED" = 1 ]; then
     # it, and finalize.sh installs the whole deb on a booted device, which is
     # what brings the hooking library, the substrate compatibility symlinks and
     # the dpkg record that lets a tweak depending on mobilesubstrate install.
+    # The licence comes out with them: provisioning installs these two dylibs on
+    # their own, without dpkg, so the notice ElleKit's BSD terms ask binary
+    # redistributions to carry has to travel with them. The deb path gets it for
+    # free, since the package contains this same file.
     ( cd "$WORK/ellekit" && ar x "$deb" \
         && xz -dc control.tar.xz | tar xf - \
         && xz -dc data.tar.xz | tar xf - \
             ./var/jb/usr/lib/ellekit/libinjector.dylib \
-            ./var/jb/usr/lib/ellekit/MobileSafety.dylib ) \
+            ./var/jb/usr/lib/ellekit/MobileSafety.dylib \
+            ./var/jb/usr/share/doc/ellekit/LICENSE ) \
         || die "could not extract $ELLEKIT_DEB"
     # Nothing under the extraction may be a symlink, dangling or otherwise.
     [ -z "$(find "$WORK/ellekit" -type l)" ] \
@@ -452,6 +457,14 @@ if [ "$EK_FETCHED" = 1 ]; then
     # Named by libinjector itself, so it is staged rather than left to resolve
     # to a path that does not exist.
     cp "$EK/ellekit/MobileSafety.dylib" "$STAGE/MobileSafety.dylib"
+
+    # Staged beside them, for the same reason it was extracted. Checked against
+    # the copy kept in the repo so the two cannot say different things.
+    EK_DOC="$WORK/ellekit/var/jb/usr/share/doc/ellekit/LICENSE"
+    [ -f "$EK_DOC" ] || die "$ELLEKIT_DEB has no share/doc/ellekit/LICENSE; layout changed?"
+    cmp -s "$EK_DOC" "$BASE/$ELLEKIT_LICENSE" \
+        || die "$ELLEKIT_LICENSE differs from the licence in $ELLEKIT_DEB; review it and update the pin"
+    cp "$EK_DOC" "$STAGE/LICENSE"
 
     # The deb itself, for finalize.sh to install on a booted device. It is the
     # upstream package, unmodified and hash-pinned above, so ElleKit stays

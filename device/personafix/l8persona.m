@@ -167,10 +167,22 @@ static BOOL l8_resolve(id self, SEL sel, NSError **error) {
      * only the first should be rewritten. Which value carries the placeholder
      * decides how to narrow it, and the placeholder is not an exported symbol
      * so it cannot simply be looked up. */
+    /* Dormant means untouched, down to the arguments. Substituting &native
+     * before the marker was read changed the original invocation on every call,
+     * armed or not, so a caller that passed NULL had the original run as though
+     * it had asked for an error. The kill switch is supposed to leave no trace;
+     * the l8localauth wrappers do the same thing for the same reason.
+     *
+     * Only the marker moves ahead of the call. no_personal_persona() stays
+     * after it: it asks MobileInstallation what it discovered, and reordering a
+     * query around the call it describes is a change this has no measurement
+     * for. */
+    if (!marker_enabled()) return gOriginalResolve(self, sel, error);
+
     NSString *named_before = string_property(self, "personaUniqueString");
     NSError *native = nil;
     BOOL ok = gOriginalResolve(self, sel, &native);
-    if (ok || !marker_enabled() || !no_personal_persona()) {
+    if (ok || !no_personal_persona()) {
         if (error) *error = native;
         return ok;
     }
@@ -283,8 +295,11 @@ static id gPrimary;
 @property (copy, nonatomic) NSString *bundleID;
 @property (nonatomic) BOOL isResolved;
 @end
+static BOOL gSawNullErrorPointer;
+
 @implementation L8TestAppIdentity
 - (BOOL)resolvePersonaWithError:(NSError **)error {
+    gSawNullErrorPointer = (error == NULL);
     if (error) *error = [NSError errorWithDomain:@"MIInstallerErrorDomain" code:0xbf userInfo:nil];
     return NO;
 }
@@ -305,6 +320,11 @@ int main(void) {
         NSError *error = nil;
         // Marker absent: stock failure passes through.
         if ([identity resolvePersonaWithError:&error] || error.code != 0xbf) return 2;
+        // And the original is called with the caller's own error pointer, so a
+        // caller that wanted none gets the invocation it asked for.
+        gSawNullErrorPointer = NO;
+        if ([identity resolvePersonaWithError:NULL]) return 16;
+        if (!gSawNullErrorPointer) return 17;
 
         [@"" writeToFile:marker atomically:NO encoding:NSUTF8StringEncoding error:nil];
         chmod(marker.fileSystemRepresentation, 0600);

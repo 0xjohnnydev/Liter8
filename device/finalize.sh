@@ -180,16 +180,18 @@ EK_LINKS=(
 # readlink is read once and cached: an absent tool prints nothing, which would
 # read as "every target is wrong" instead of "this was not checked".
 EK_READLINK=""
+# Read once and cached. Its own function because ek_readlink_complaint needs the
+# same answer, and because this must not print to ek_broken_links' stdout: that
+# stdout IS the broken-link list and the callers word-split it, so a warning
+# emitted there became fake broken links.
+ek_probe_readlink() {
+    [[ -n "$EK_READLINK" ]] && return 0
+    EK_READLINK=$(sh_dev "$RPATH; command -v readlink >/dev/null && echo yes || echo no" | tr -d '\r')
+}
+
 ek_broken_links() {
     local bad=() spec link want got
-    if [[ -z "$EK_READLINK" ]]; then
-        EK_READLINK=$(sh_dev "$RPATH; command -v readlink >/dev/null && echo yes || echo no" | tr -d '\r')
-        # stderr, not stdout: this function's stdout IS the broken-link list and
-        # the callers word-split it, so a warning printed here became fake
-        # broken links and left finalize incomplete with every link resolving.
-        [[ "$EK_READLINK" == yes ]] \
-            || printf '    [!] no readlink on the device PATH; link targets unverified, only resolution\n' >&2
-    fi
+    ek_probe_readlink
     for spec in $EK_LINKS; do
         link=${spec%%:*}
         want=${spec#*:}
@@ -269,6 +271,8 @@ ek_package_complaints() {
         | grep -v "^missing[[:space:]]*$EK_BOOT_SCRIPT\$" \
         | grep -v '^[[:space:]]*$' || true
     ek_mode_complaints
+    ek_mode_table_drift
+    ek_readlink_complaint
 }
 
 # Modes and owners of the package's regular files, which dpkg -V does not look
@@ -280,24 +284,51 @@ ek_package_complaints() {
 # The expected modes come out of the pinned archive rather than a list written
 # here, so they cannot drift from the package. Regular files only: dpkg owns
 # the symlinks' targets and ek_broken_links already covers the links.
+# Expectations come from ellekit.pin, not from the archive in payload/.
+#
+# Reading them from the deb meant no deb, no checks: `fw finalize` does not
+# fetch payloads, so on a fresh work directory the whole function returned
+# early and said nothing was wrong. Measured on device: the loader at mode 000
+# with no cached deb was reported complete, which is the common case rather
+# than an edge one. It also meant device commands were built out of member
+# names taken from a downloaded archive.
+#
+# Not `path` for the loop variable: in zsh that name is tied to $PATH, so
+# declaring it local emptied PATH inside the function and ar and xz stopped
+# resolving.
 ek_mode_complaints() {
+    local entry want member got
+    for entry in ${(f)ELLEKIT_FILE_MODES}; do
+        [[ -n "$entry" ]] || continue
+        want=${entry%%:*}
+        member=${entry#*:}
+        got=$(sh_dev "$RPATH; ls -ln ${(q)member} 2>/dev/null" < /dev/null | tr -d '\r')
+        [[ -n "$got" ]] || { print -r -- "absent $member"; continue; }
+        [[ "${${got%% *}%[.+]}" == "$want" && "${${(z)got}[3]}" == 0 ]] \
+            || print -r -- "mode/owner $member is ${${(z)got}[1]} uid ${${(z)got}[3]}, expected $want uid 0"
+    done
+}
+
+# Whenever the archive is here, the table has to agree with it, so bumping the
+# pin cannot leave the table describing the version before it.
+ek_mode_table_drift() {
     [[ -f "$EK_DEB" ]] || return 0
-    # Not `path`: in zsh that name is tied to $PATH, so declaring it local here
-    # emptied PATH inside the function and ar and xz stopped resolving.
-    local line want member got
-    tar tvf <(xz -dc < <(ar p "$EK_DEB" data.tar.xz)) 2>/dev/null \
-        | while read -r line; do
-            want=${line%% *}
-            [[ "$want" == -* ]] || continue          # regular files only
-            member=${line##* }
-            # stdin closed: ssh reads stdin, and this loop's stdin is the pipe
-            # from tar, so without this the first member's ssh swallowed the
-            # rest of the archive listing and the loop checked exactly one file.
-            got=$(sh_dev "$RPATH; ls -ln '${member#.}' 2>/dev/null" < /dev/null | tr -d '\r')
-            [[ -n "$got" ]] || { print -r -- "absent ${member#.}"; continue; }
-            [[ "${${got%% *}%[.+]}" == "$want" && "${${(z)got}[3]}" == 0 ]] \
-                || print -r -- "mode/owner ${member#.} is ${${(z)got}[1]} uid ${${(z)got}[3]}, expected $want uid 0"
-        done
+    local from_archive from_pin
+    from_archive=$(tar tvf <(xz -dc < <(ar p "$EK_DEB" data.tar.xz)) 2>/dev/null \
+        | sed -n 's|^\(-[rwxsStT-]*\) .* \./\(.*\)$|\1:/\2|p' | sort)
+    from_pin=$(print -rl -- ${(f)ELLEKIT_FILE_MODES} | grep -v '^[[:space:]]*$' | sort)
+    [[ "$from_archive" == "$from_pin" ]] \
+        || print -r -- "ellekit.pin's ELLEKIT_FILE_MODES does not match $EK_DEB"
+}
+
+# An unverifiable link is not a verified one. Without readlink the fallback can
+# only ask whether each name resolves, which accepts a loader repointed at any
+# other existing file, so the absence of the verifier is itself a reason to
+# call finalization incomplete rather than a warning to print and carry on.
+ek_readlink_complaint() {
+    ek_probe_readlink
+    [[ "$EK_READLINK" == yes ]] \
+        || print -r -- "link targets unverified: no readlink on the device PATH"
 }
 
 # Ask for the status, not the version. A removed package keeps its version in

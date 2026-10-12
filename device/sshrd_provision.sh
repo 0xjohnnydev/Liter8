@@ -820,6 +820,7 @@ TWEAK_SET="
 payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755:pkg=./var/jb/usr/lib/ellekit/libinjector.dylib
 payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755:pkglink=./var/jb/usr/lib/ellekit/libinjector.dylib
 payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755:pkg=./var/jb/usr/lib/ellekit/MobileSafety.dylib
+payload/tweaks/LICENSE:/mnt2/jb/usr/share/doc/ellekit/LICENSE:0644:pkg=./var/jb/usr/share/doc/ellekit/LICENSE
 payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755:-
 payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644:-
 payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755:-
@@ -981,7 +982,7 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     ok "host payload verified: ad-hoc, both slices, no entitlements, filters lint"
 
     mkdir -p payload/.work
-    sh_dev 'mkdir -p /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject' >/dev/null \
+    sh_dev 'mkdir -p /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit' >/dev/null \
         || die "could not create the tweak directories"
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with
