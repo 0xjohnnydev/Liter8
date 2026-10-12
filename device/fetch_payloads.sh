@@ -421,6 +421,14 @@ if [ "$EK_FETCHED" = 1 ]; then
     # anywhere after the first rm -rf left no tweak set at all, so a transient
     # build failure took away the last working one as well as the new one.
     STAGE="$OUT/.tweaks-building"
+    ROLLBACK="$OUT/.tweaks-previous"
+    # An interrupted publish leaves the old set under the rollback name and
+    # nothing at payload/tweaks. Put it back before building, so the rollback
+    # this run creates cannot bury a usable set from the last one.
+    if [ ! -d "$OUT/tweaks" ] && [ -d "$ROLLBACK" ]; then
+        mv "$ROLLBACK" "$OUT/tweaks" \
+            && skip "restored the previous tweak set from an interrupted publish"
+    fi
     rm -rf "$STAGE" && mkdir -p "$STAGE/TweakInject"
     cp "$EK/ellekit/libinjector.dylib" "$STAGE/libinjector.dylib"
     # Named by libinjector itself, so it is staged rather than left to resolve
@@ -466,9 +474,22 @@ if [ "$EK_FETCHED" = 1 ]; then
         ok "$name.dylib and its filter plist staged"
     done
 
-    # Everything above passed, so the previous set is now safe to replace.
-    rm -rf "$OUT/tweaks" && mv "$STAGE" "$OUT/tweaks" \
-        || die "could not move the verified tweak set into $OUT/tweaks"
+    # Everything above passed, so the previous set can be replaced. It is moved
+    # aside rather than deleted: `rm -rf` then `mv` still had a window where a
+    # failed or interrupted publication left no set at all, which is the same
+    # loss the staging directory was added to prevent, one step later. The old
+    # set is restored if the publish fails, and a rollback left behind by an
+    # interrupted run is put back by the check where $ROLLBACK is defined.
+    if [ -d "$OUT/tweaks" ]; then
+        rm -rf "$ROLLBACK"
+        mv "$OUT/tweaks" "$ROLLBACK" || die "could not move the previous tweak set aside"
+    fi
+    if ! mv "$STAGE" "$OUT/tweaks"; then
+        [ -d "$ROLLBACK" ] && mv "$ROLLBACK" "$OUT/tweaks"
+        die "could not publish the tweak set; the previous one has been put back"
+    fi
+    rm -rf "$ROLLBACK"
+    ok "tweak set published"
 fi
 
 # ------------------------------------------------------------------ pairing

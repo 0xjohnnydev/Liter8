@@ -836,23 +836,47 @@ for entry in $TWEAK_SET; do
 done
 [ "$tweak_any" = 1 ] || TWEAK_PAYLOAD=none
 
+# The package members the table refers to, deduplicated. Derived from TWEAK_SET
+# so the extraction below and the comparisons above cannot ask for different
+# files.
+tweak_pkg_members() {
+    for entry in $TWEAK_SET; do
+        case "${entry##*:}" in pkg=*|pkglink=*) echo "${entry##*=}" ;; esac
+    done | sort -u
+}
+
 # sha256 of one member of ElleKit's deb, extracted once and cached. Needed to
 # recognise the post-finalize form of the three paths dpkg owns. Prints nothing
 # when the deb is absent, which the callers treat as "cannot compare".
 tweak_pkg_hash() {
     [ -f payload/tweaks/ellekit.deb ] || return 0
-    if [ ! -d payload/.work/ekpkg ]; then
+    # Keyed on a marker written only after the extraction finished and every
+    # member was checked present. The directory's own existence was the key
+    # before, so an extraction interrupted after its mkdir left an empty
+    # directory that every later run took for a finished cache: this returned
+    # nothing, a correctly finalized device was reported MISMATCH, and
+    # `fw provision --check` refused to call the boot safe until someone deleted
+    # the directory by hand. Testing for the members instead is not enough
+    # either, because tar interrupted mid-member leaves a short file that exists.
+    if [ ! -f payload/.work/ekpkg/.complete ]; then
+        rm -rf payload/.work/ekpkg
         mkdir -p payload/.work/ekpkg || return 0
         # Named members only, for the reason fetch_payloads.sh gives: the full
         # payload would also unpack symlinks pointing at absolute /var/jb paths
         # that do not exist on a Mac, and a dangling one under device/ breaks
         # the copytree in prepare_runtime.
+        # The member list comes from the same helper the check above uses, so a
+        # path added to the table cannot be verified against a file this never
+        # extracts.
+        # shellcheck disable=SC2046  # one tar argument per member, so it must split
         ( cd payload/.work/ekpkg \
             && ar x "$PWD/../../tweaks/ellekit.deb" \
-            && xz -dc data.tar.xz | tar xf - \
-                ./var/jb/usr/lib/ellekit/libinjector.dylib \
-                ./var/jb/usr/lib/ellekit/MobileSafety.dylib ) >/dev/null 2>&1 \
+            && xz -dc data.tar.xz | tar xf - $(tweak_pkg_members) ) >/dev/null 2>&1 \
             || return 0
+        for member in $(tweak_pkg_members); do
+            [ -f "payload/.work/ekpkg/$member" ] || return 0
+        done
+        : > payload/.work/ekpkg/.complete
     fi
     [ -f "payload/.work/ekpkg/$1" ] || return 0
     shasum -a 256 "payload/.work/ekpkg/$1" | awk '{print $1}'
@@ -871,6 +895,27 @@ tweak_stage() {
         | tr -d '\r'
 }
 
+# Same policy the injection step applies to .lhook_enabled: a provision leaves
+# the device inert, so an armed marker from a previous run is set aside rather
+# than carried into a boot nobody asked to arm. Both tweaks read their own
+# marker, so both are set aside.
+#
+# Shared with the nothing-to-install path below, which is the case that made
+# this a function. Having it only on the install path meant a device that had
+# been provisioned before, revisited from a fresh work directory with no host
+# payload, kept whatever marker was already armed: the run reported no loader
+# installed while leaving a tweak live for the next boot.
+set_aside_tweak_markers() {
+    must_dev '
+for m in .liter8-localauth .liter8-persona; do
+    if [ -e "/mnt2/jb/$m" ]; then
+        mv -f "/mnt2/jb/$m" "/mnt2/jb/$m.pre-provision"
+    fi
+done
+echo DONE_OK
+' "could not set aside an existing tweak marker"
+}
+
 # Nothing built, rather than a bad build: fetch_payloads.sh skips the whole set
 # when ellekit.space is unreachable instead of ending a provision before
 # Dropbear is installed, so this skips to match. A set that is partly there is
@@ -878,7 +923,12 @@ tweak_stage() {
 if wants tweaks && [ "$CHECK_ONLY" = 0 ] && [ "$TWEAK_PAYLOAD" = none ]; then
     say "tweak loader and TweakInject payloads"
     skip "payload/tweaks absent; run ./fetch_payloads.sh tweaks with network"
-    skip "injection will find no loader until then; nothing else is affected"
+    # Nothing to install is not nothing to do. The device may already carry a
+    # loader and an armed marker from an earlier provision, so report what is
+    # actually there and leave the markers disarmed either way.
+    skip "installed loader: $(tweak_stage)"
+    set_aside_tweak_markers
+    skip "any armed tweak marker has been set aside; injection needs lhookctl enable"
 elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     say "tweak loader and TweakInject payloads"
     for entry in $TWEAK_SET; do
@@ -949,18 +999,7 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
         ok "/var/jb${dst#/mnt2/jb} ($mode)"
     done
 
-    # Same policy the injection step applies to .lhook_enabled: a provision
-    # leaves the device inert, so an armed marker from a previous run is set
-    # aside rather than carried into a boot nobody asked to arm. Both tweaks
-    # read their own marker, so both are set aside.
-    must_dev '
-for m in .liter8-localauth .liter8-persona; do
-    if [ -e "/mnt2/jb/$m" ]; then
-        mv -f "/mnt2/jb/$m" "/mnt2/jb/$m.pre-provision"
-    fi
-done
-echo DONE_OK
-' "could not set aside an existing tweak marker"
+    set_aside_tweak_markers
     ok "loader in place; injection needs lhookctl enable, each tweak needs its marker"
 fi
 

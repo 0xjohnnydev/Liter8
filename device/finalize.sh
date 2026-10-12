@@ -199,8 +199,72 @@ ek_broken_links() {
     done
     print -r -- "${bad[@]}"
 }
+EK_BOOT_SCRIPT=/var/jb/etc/rc.d/ellekit-loader
+EK_BOOT_DIVERSION="$EK_BOOT_SCRIPT.liter8-disabled"
+
 ek_boot_script_present() {
-    sh_dev "$RPATH; [ -e /var/jb/etc/rc.d/ellekit-loader ]" >/dev/null 2>&1
+    sh_dev "$RPATH; [ -e '$EK_BOOT_SCRIPT' ]" >/dev/null 2>&1
+}
+
+# Divert the package's boot script instead of deleting it.
+#
+# Deleting it was a one-time act, so any later `dpkg -i`, apt reinstall or
+# upgrade put it straight back: measured on device, a reinstall of the pinned
+# deb recreates ellekit-loader as a symlink to usr/libexec/ellekit/loader. A
+# local diversion survives that, because dpkg writes the package's copy to the
+# diverted name and leaves rc.d alone. Confirmed on device: with the diversion
+# added, the same reinstall left rc.d holding only the diverted name.
+#
+# The reason is not that the script would otherwise run. Nothing on this
+# bootstrap executes /var/jb/etc/rc.d: there is no runner in jbboot.sh, no
+# ElleKit launchd job, and the postinst invokes the loader directly at install
+# time, which is the assertion failure dpkg prints and carries on from. An
+# earlier comment here claimed it runs at every boot, which is wrong. What the
+# diversion buys is that the removal stays done across package operations, that
+# `dpkg -V` becomes a clean signal rather than permanently reporting one missing
+# file, and that this is still correct if a future bootstrap does add a runner.
+ek_divert_boot_script() {
+    if sh_dev "$RPATH; dpkg-divert --list '$EK_BOOT_SCRIPT'" 2>/dev/null \
+        | grep -q "$EK_BOOT_DIVERSION"; then
+        return 0
+    fi
+    sh_dev "$RPATH; command -v dpkg-divert >/dev/null" >/dev/null 2>&1 || {
+        # No dpkg-divert: fall back to the old removal rather than leaving the
+        # competing script in place, and say that it will not stay removed.
+        sh_dev "$RPATH; rm -f '$EK_BOOT_SCRIPT'" >/dev/null
+        printf '    [!] no dpkg-divert on the device; removed the boot script without a diversion\n'
+        printf '    [!] a package reinstall will put it back\n'
+        return 0
+    }
+    sh_dev "$RPATH; dpkg-divert --divert '$EK_BOOT_DIVERSION' --rename --add '$EK_BOOT_SCRIPT'" \
+        >/dev/null 2>&1 \
+        || die "could not divert $EK_BOOT_SCRIPT"
+    # --rename moves an existing file; nothing to move is equally fine, but the
+    # path itself must be clear either way before this is called a success.
+    sh_dev "$RPATH; rm -f '$EK_BOOT_SCRIPT'" >/dev/null
+    ek_boot_script_present && die "$EK_BOOT_SCRIPT is still present after diverting it"
+    return 0
+}
+
+# What `dpkg -V` says about the package's own files, one line per complaint.
+#
+# The link checks above verify where each name points, not what is at the other
+# end, so a truncated or replaced libinjector.dylib passed every one of them
+# while TweakLoader.dylib resolved to an unloadable image. This asks dpkg to
+# compare its recorded md5sums instead, which covers every file the package
+# owns rather than the handful this script would otherwise pick.
+#
+# Judged by output, not exit status: measured on device, `dpkg -V` exits 0 even
+# while reporting a missing file. A device diverted by this script is expected
+# to be silent; one finalized before the diversion existed reports exactly the
+# boot script as missing, which is that older intended state and not damage.
+# `|| true` because no complaints is the good case and the last grep exits 1 on
+# empty output, which under `set -e` aborted finalize at the assignment without
+# printing anything at all.
+ek_package_complaints() {
+    sh_dev "$RPATH; dpkg -V ellekit 2>&1" | tr -d '\r' \
+        | grep -v "^missing[[:space:]]*$EK_BOOT_SCRIPT\$" \
+        | grep -v '^[[:space:]]*$' || true
 }
 
 # Ask for the status, not the version. A removed package keeps its version in
@@ -216,24 +280,31 @@ if (( EK_INSTALLED )) && [[ "${EK_STATE%% *}" != "$ELLEKIT_VER" ]]; then
     FINALIZE_INCOMPLETE=1
 elif (( EK_INSTALLED )); then
     EK_BAD=(${=$(ek_broken_links)})
-    if ek_boot_script_present || (( ${#EK_BAD} )); then
+    EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+    EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+    if ek_boot_script_present || (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
         if (( CHECK_ONLY )); then
             printf '    [=] ellekit %s installed but incomplete: %s\n' "$ELLEKIT_VER" \
-                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}}"
+                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+dpkg -V: ${EK_COMPLAINTS[*]}}"
             FINALIZE_INCOMPLETE=1
         else
-            sh_dev "$RPATH; rm -f /var/jb/etc/rc.d/ellekit-loader" >/dev/null
+            ek_divert_boot_script
             EK_BAD=(${=$(ek_broken_links)})
-            if (( ${#EK_BAD} )); then
-                # The links are the package's own, so this step cannot recreate
-                # them without guessing. Say what is wrong and let the rest of
-                # finalize run: nothing after this depends on them.
-                printf '    [!] ellekit is installed but these do not resolve: %s\n' \
+            EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+            EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+            if (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
+                # The links and the files behind them are the package's own, so
+                # this step cannot repair them without guessing. Say what is
+                # wrong and let the rest of finalize run: nothing after this
+                # depends on them.
+                (( ${#EK_BAD} )) && printf '    [!] ellekit is installed but these do not resolve: %s\n' \
                     "${${(@)EK_BAD:t}[*]}"
+                (( ${#EK_COMPLAINTS} )) && printf '    [!] dpkg -V disagrees with the installed files: %s\n' \
+                    "${EK_COMPLAINTS[*]}"
                 printf '    [!] reinstall it: dpkg -i /var/root/ellekit.deb on the device\n'
                 FINALIZE_INCOMPLETE=1
             else
-                ok "ellekit $ELLEKIT_VER already installed; boot script removed, links checked"
+                ok "ellekit $ELLEKIT_VER already installed; boot script diverted, links and package files checked"
             fi
         fi
     else
@@ -284,13 +355,20 @@ else
         || die "ellekit did not register with dpkg: ${EK_STATE:-nothing}"
     [[ "${EK_STATE%% *}" == "$ELLEKIT_VER" ]] \
         || die "dpkg registered ellekit ${EK_STATE%% *}, expected $ELLEKIT_VER"
-    # That loader would be run again at every boot for the same assertion, so
-    # the boot script goes. dpkg -V will report it missing, which is accurate.
-    sh_dev "$RPATH; rm -f /var/jb/etc/rc.d/ellekit-loader" >/dev/null
+    # The package's own loader has no business competing with lhook, so its
+    # boot script is diverted rather than deleted. See ek_divert_boot_script for
+    # what that does and, more to the point, what it does not: nothing on this
+    # bootstrap runs rc.d, so this is about the removal staying done across
+    # package operations rather than about stopping a boot-time loader.
+    ek_divert_boot_script
     EK_BAD=(${=$(ek_broken_links)})
     (( ${#EK_BAD} == 0 )) \
         || die "these do not resolve after installing ellekit: ${${(@)EK_BAD:t}[*]}"
-    ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; boot script removed"
+    EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+    EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+    (( ${#EK_COMPLAINTS} == 0 )) \
+        || die "dpkg -V disagrees with the files just installed: ${EK_COMPLAINTS[*]}"
+    ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 
 say "one-time System application registration"
