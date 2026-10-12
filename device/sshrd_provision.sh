@@ -803,7 +803,7 @@ fi
 #
 # The fourth field is what ElleKit's own deb puts at that path, because
 # finalize.sh installs that deb on a booted device and its dpkg -i replaces
-# three of these seven. Verification has to accept both forms: requiring the
+# some of them. Verification has to accept both forms: requiring the
 # bytes and mode provisioning wrote reported a correctly finalized device
 # MISMATCH, and re-provisioning then overwrote package-owned files, after which
 # the next finalize saw ellekit registered and never put them back.
@@ -1019,14 +1019,14 @@ echo DONE_OK
     # finalize.sh installs ElleKit's own deb on a booted device. They cannot come
     # from here: the names have to be symlinks and ln is not a tool the ramdisk
     # is known to have, and dpkg needs a booted bootstrap.
-    # After finalize, dpkg owns three of these seven. Writing our re-signed
+    # After finalize, dpkg owns four of these eight. Writing our re-signed
     # copies back over them puts unowned content under the package's name, turns
     # the symlink the package wants at TweakLoader.dylib back into a regular
     # file, and the next finalize sees ellekit registered so it never restores
     # either. The four TweakInject payloads are ours and always install.
     TWEAK_AT=$(tweak_stage)
     [ "$TWEAK_AT" = finalized ] \
-        && skip "ellekit's deb is installed; its three files are left to dpkg"
+        && skip "ellekit's deb is installed; the files it owns are left to dpkg"
     # Before the first write, not after the last. Any failure in the loop below
     # exits the script, so disarming afterwards left an armed marker over a
     # half-replaced tweak set: the next lhookctl enable would activate whatever
