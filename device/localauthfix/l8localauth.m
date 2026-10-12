@@ -141,18 +141,27 @@ static void l8_evaluate(id self, SEL sel, NSInteger policy,
     });
 }
 
+/* The three synchronous wrappers check the marker before calling through, so a
+ * disabled shim forwards the caller's own error pointer, NULL included.
+ * Substituting &native regardless meant a caller that asked for no error
+ * reporting had the original invoked as though it had asked for it, which is a
+ * difference the kill switch exists to remove. The async wrappers already
+ * short-circuit the same way. The extra lstat is immaterial here: these are
+ * user-initiated authentication prompts, not a hot path. */
 static id l8_evaluateSync(id self, SEL sel, NSInteger policy,
                           NSDictionary *options, NSError **error) {
+    if (!marker_enabled()) return gOriginalEvaluateSync(self, sel, policy, options, error);
     NSError *native = nil;
     id result = gOriginalEvaluateSync(self, sel, policy, options, &native);
-    if (error) *error = (result != nil || !marker_enabled()) ? native : translated(native);
+    if (error) *error = result != nil ? native : translated(native);
     return result;
 }
 
 static BOOL l8_canEvaluate(id self, SEL sel, NSInteger policy, NSError **error) {
+    if (!marker_enabled()) return gOriginalCanEvaluate(self, sel, policy, error);
     NSError *native = nil;
     BOOL ok = gOriginalCanEvaluate(self, sel, policy, &native);
-    if (error) *error = (ok || !marker_enabled()) ? native : translated(native);
+    if (error) *error = ok ? native : translated(native);
     return ok;
 }
 
@@ -180,20 +189,52 @@ static void l8_accessOptions(id self, SEL sel, CFTypeRef accessControl, NSIntege
 
 static id l8_accessSync(id self, SEL sel, CFTypeRef accessControl, NSInteger operation,
                         NSDictionary *options, NSError **error) {
+    if (!marker_enabled()) {
+        return gOriginalAccessSync(self, sel, accessControl, operation, options, error);
+    }
     NSError *native = nil;
     id result = gOriginalAccessSync(self, sel, accessControl, operation, options, &native);
-    if (error) *error = (result != nil || !marker_enabled()) ? native : translated(native);
+    if (error) *error = result != nil ? native : translated(native);
     return result;
 }
 
-/* Swizzle one method if it exists with the expected argument count. The
- * original is published before the replacement is installed, so a thread that
- * enters the hook at once never sees a NULL original. Each hook is
- * independent: a selector missing on some build leaves the others working. */
-static BOOL swap(Class cls, const char *name, unsigned arguments, IMP replacement,
-                 IMP *original) {
+/* A method's type encoding with the frame offsets stripped, leaving only the
+ * type letters. The offsets are frame-layout detail and say nothing about
+ * whether the casts above are valid; the letters are exactly what they depend
+ * on, and dropping the numbers keeps the expectation readable. */
+static void encoding_letters(const char *encoding, char *out, size_t size) {
+    size_t n = 0;
+    for (const char *p = encoding; p != NULL && *p != '\0' && n + 1 < size; p++) {
+        if (*p < '0' || *p > '9') out[n++] = *p;
+    }
+    out[n] = '\0';
+}
+
+/* Swizzle one method if it exists with the expected argument count and the
+ * expected type encoding. The original is published before the replacement is
+ * installed, so a thread that enters the hook at once never sees a NULL
+ * original. Each hook is independent: a selector missing on some build leaves
+ * the others working.
+ *
+ * Arity alone was not enough. These are mostly private selectors, and a private
+ * selector can keep its argument count across builds while changing a return,
+ * a scalar or a block ABI. Forwarding such a method through the fixed typedefs
+ * above corrupts arguments or kills the host process, and the marker does not
+ * prevent it because the swizzle happens either way. An unrecognised encoding
+ * now leaves the method alone and says so, which costs that one fallback and
+ * keeps the process alive. */
+static BOOL swap(Class cls, const char *name, unsigned arguments, const char *types,
+                 IMP replacement, IMP *original) {
     Method method = class_getInstanceMethod(cls, sel_registerName(name));
     if (method == NULL || method_getNumberOfArguments(method) != arguments) return NO;
+    char letters[160];
+    encoding_letters(method_getTypeEncoding(method), letters, sizeof letters);
+    if (strcmp(letters, types) != 0) {
+        os_log_error(OS_LOG_DEFAULT,
+                     "l8localauth: %{public}s encoding is %{public}s, expected %{public}s; "
+                     "not hooked", name, letters, types);
+        return NO;
+    }
     *original = method_getImplementation(method);
     method_setImplementation(method, replacement);
     return YES;
@@ -208,18 +249,26 @@ static void install_if_ready(void) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&gInstalled, &expected, true)) return;
 
+    /* Encodings read from the live runtime on n104/24B5099f, offsets stripped.
+     * CFTypeRef comes back concretely typed as the SecAccessControl struct
+     * pointer, and the two reply: variants are indistinguishable by encoding
+     * because NSString* and NSDictionary* are both '@'; the selector name is
+     * what separates those two, which is why both are still listed. */
     int hooked = 0;
-    hooked |= swap(cls, "evaluatePolicy:options:reply:", 5,
+    hooked |= swap(cls, "evaluatePolicy:options:reply:", 5, "v@:q@@?",
                    (IMP)l8_evaluate, (IMP *)&gOriginalEvaluate) << 0;
-    hooked |= swap(cls, "evaluatePolicy:options:error:", 5,
+    hooked |= swap(cls, "evaluatePolicy:options:error:", 5, "@@:q@^@",
                    (IMP)l8_evaluateSync, (IMP *)&gOriginalEvaluateSync) << 1;
-    hooked |= swap(cls, "canEvaluatePolicy:error:", 4,
+    hooked |= swap(cls, "canEvaluatePolicy:error:", 4, "B@:q^@",
                    (IMP)l8_canEvaluate, (IMP *)&gOriginalCanEvaluate) << 2;
     hooked |= swap(cls, "evaluateAccessControl:operation:localizedReason:reply:", 6,
+                   "v@:^{__SecAccessControl=}q@@?",
                    (IMP)l8_access, (IMP *)&gOriginalAccess) << 3;
     hooked |= swap(cls, "evaluateAccessControl:operation:options:reply:", 6,
+                   "v@:^{__SecAccessControl=}q@@?",
                    (IMP)l8_accessOptions, (IMP *)&gOriginalAccessOptions) << 4;
     hooked |= swap(cls, "evaluateAccessControl:operation:options:error:", 6,
+                   "@@:^{__SecAccessControl=}q@^@",
                    (IMP)l8_accessSync, (IMP *)&gOriginalAccessSync) << 5;
     os_log_error(OS_LOG_DEFAULT, "l8localauth: installed in pid %d (hook mask 0x%x of 0x3f)",
                  getpid(), hooked);

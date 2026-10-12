@@ -618,7 +618,12 @@ fi
 # --------------------------------------------------------------- injection
 if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     say "launchd injection bootstrap"
-    for required in payload/launchd.orig payload/launchd.hooked payload/launchd.hooked-legacy \
+    # launchd.hooked-legacy is deliberately absent on a build whose launchd has
+    # under 48 bytes of load-command slack, because the previous 48-byte hook
+    # path could never have fitted there and so is not a state to recognise.
+    # fetch_payloads.sh skips it on exactly that condition; requiring it here
+    # would move the same abort one stage later.
+    for required in payload/launchd.orig payload/launchd.hooked \
                     payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl \
                     launchdhook/lhook.deny; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh injection"
@@ -626,7 +631,11 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
 
     stock_sha=$(shasum -a 256 payload/launchd.orig | awk '{print $1}')
     hooked_sha=$(shasum -a 256 payload/launchd.hooked | awk '{print $1}')
-    legacy_sha=$(shasum -a 256 payload/launchd.hooked-legacy | awk '{print $1}')
+    # An unset legacy hash can never equal a real one, so the recognition case
+    # below simply never fires where no legacy image exists.
+    legacy_sha=
+    [ -f payload/launchd.hooked-legacy ] \
+        && legacy_sha=$(shasum -a 256 payload/launchd.hooked-legacy | awk '{print $1}')
     hook_sha=$(shasum -a 256 payload/lhook.dylib | awk '{print $1}')
     systemhook_sha=$(shasum -a 256 payload/systemhook.dylib | awk '{print $1}')
     sbextissue_sha=$(shasum -a 256 payload/sbextissue | awk '{print $1}')
@@ -639,13 +648,15 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
         || die "launchd payload code-slot verification failed"
     # The previous-path image is never installed, only recognised, so it is
     # verified by the same rules before its hash is allowed to mean anything.
-    python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked-legacy \
-        /usr/lib/lhook.dylib >/dev/null \
-        || die "previous-path launchd byte-diff verification failed"
-    codesign -v payload/launchd.hooked-legacy \
-        || die "previous-path launchd code-slot verification failed"
-    [ "$legacy_sha" != "$hooked_sha" ] \
-        || die "the two hook paths hash identically; the path change is not in effect"
+    if [ -n "$legacy_sha" ]; then
+        python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked-legacy \
+            /usr/lib/lhook.dylib >/dev/null \
+            || die "previous-path launchd byte-diff verification failed"
+        codesign -v payload/launchd.hooked-legacy \
+            || die "previous-path launchd code-slot verification failed"
+        [ "$legacy_sha" != "$hooked_sha" ] \
+            || die "the two hook paths hash identically; the path change is not in effect"
+    fi
     for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl; do
         codesign -v "$binary" || die "$binary signature verification failed"
         [ -z "$("$LDID" -e "$binary")" ] \
