@@ -303,6 +303,24 @@ public struct MobileActivationDResolver: Sendable {
                 }
             }
 
+            // `!foundLegacy` is a precedence rule, not a shortcut, and removing
+            // it stops this resolver working on every supported build.
+            //
+            // Measured on 24A435, 24A437, 24B5084k and the userland reference,
+            // all four of which take the legacy shape: at the one TBZ gate in
+            // the real method, gate+0x60 matches the legacy ADRP/ADD/LDR *and*
+            // the TBZ target matches all fourteen instructions of the dictionary
+            // fallback. Both shapes are present in the same code, so scanning
+            // both and rejecting the overlap yields two candidates at one gate,
+            // `uniqueActivationStateMethod` then finds no method with exactly
+            // one, and the whole resolve fails with noCandidate. Checked by
+            // doing it: all four binaries stopped resolving.
+            //
+            // The legacy patch set is the device-validated one on 24A437. It
+            // NOPs the gate so control falls through to the load at +0x60 and
+            // rewrites that load, which is a coherent transform rather than an
+            // accident of ordering. See the precedence test in
+            // MobileActivationDResolverTests.
             if !foundLegacy,
                let fallback = ARM64.testBranchTarget(instruction: branch, at: gate),
                // Subtract rather than add, for the same reason as the iBEC leaf

@@ -172,15 +172,57 @@ public struct FirmwareArtifact: Sendable {
         return output
     }
 
+    /// Which representation the shipped payload is in, or nil when it is plainly
+    /// uncompressed.
+    ///
+    /// Only `bvx2` used to be recognised, so a valid LZFSE stream whose first
+    /// block is stored, v1 or LZVN (`bvx-`, `bvx1`, `bvxn`) fell through to nil
+    /// and the rebuilt IM4P was written uncompressed with its compression
+    /// descriptor dropped. That silently defeats the one thing this flag exists
+    /// for, because the iBoots it is set for reject an uncompressed image.
+    ///
+    /// The container's own descriptor is read first: it states the algorithm
+    /// outright and holds even for a payload whose magic is unknown here. An
+    /// algorithm this code cannot reproduce is refused rather than quietly
+    /// turned into a different representation.
     private static func compressionMode(of original: Data) throws -> String? {
         let children = try topLevelChildren(in: original)
         guard children.count >= 4, original[children[3].lowerBound] == 0x04 else {
             throw PatchfinderError.invalidFirmwareContainer("IM4P has no payload OCTET STRING")
         }
+        if let algorithm = try compressionAlgorithm(in: original, children: children) {
+            guard algorithm == 1 else {
+                throw PatchfinderError.invalidFirmwareContainer(
+                    "IM4P compression descriptor names algorithm \(algorithm), which this "
+                    + "cannot reproduce; refusing to rewrite the payload uncompressed"
+                )
+            }
+            return "lzfse"
+        }
         let payload = try derValueRange(in: original, at: children[3].lowerBound)
-        if original[payload].starts(with: Data("bvx2".utf8)) { return "lzfse" }
+        // Every LZFSE block header starts "bvx": bvx- stored, bvx1, bvx2,
+        // bvxn LZVN. Re-encoding produces a bvx2 stream either way, so what is
+        // being preserved is "an LZFSE stream", not the exact block kind.
+        if original[payload].starts(with: Data("bvx".utf8)) { return "lzfse" }
         if original[payload].starts(with: Data("complzss".utf8)) { return "lzss" }
         return nil
+    }
+
+    /// The algorithm from the IM4P compression descriptor, or nil if there is
+    /// none. Shape: `SEQUENCE { INTEGER algorithm, INTEGER uncompressedSize }`,
+    /// the same one `ibootLZFSEContainer` writes, and it sits after the four
+    /// ordinary children. PAYP is also a trailing child but is context tag
+    /// 0xA0, so matching on SEQUENCE skips it.
+    private static func compressionAlgorithm(
+        in original: Data, children: [Range<Int>]
+    ) throws -> Int? {
+        guard let descriptor = children.dropFirst(4)
+            .first(where: { original[$0.lowerBound] == 0x30 }) else { return nil }
+        let body = try derValueRange(in: original, at: descriptor.lowerBound)
+        guard !body.isEmpty, original[body.lowerBound] == 0x02 else { return nil }
+        let value = try derValueRange(in: original, at: body.lowerBound)
+        guard !value.isEmpty, value.count <= 8 else { return nil }
+        return original[value].reduce(0) { ($0 << 8) | Int($1) }
     }
 
     private static func topLevelChildren(in data: Data) throws -> [Range<Int>] {
