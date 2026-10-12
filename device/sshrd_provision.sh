@@ -1270,14 +1270,26 @@ echo $n' | tr -d ' \r')
     else
         SRC="$IPSW_ROOT/private/var/staged_system_apps"
         TAR=payload/apps50.tar.gz
-        if [ ! -f "$TAR" ]; then
+        # Bound to the firmware it was built from, not just to its own
+        # existence. A work directory reused across builds kept a 659 MB archive
+        # of the previous firmware's system apps and streamed it onto
+        # /Applications, which is the wrong apps installed quietly. The reviewed
+        # stock launchd hash is the build fingerprint this script already has.
+        TAR_BUILD=payload/apps50.build
+        if [ ! -f "$TAR" ] || [ "$(cat "$TAR_BUILD" 2>/dev/null)" != "$LAUNCHD_SHA" ]; then
+            [ -f "$TAR" ] && ok "$TAR was built from another firmware; rebuilding"
+            rm -f "$TAR" "$TAR_BUILD"
             ok "building $TAR (659 MB, about a minute)"
             mkdir -p payload
             # -C "$SRC" . rather than a word-split $(ls): archives the whole
             # directory without relying on app names being space-free.
             # Entries come out as ./Calculator.app/..., which extracts correctly.
             "$GTAR" czf "$TAR" --owner=0 --group=80 --numeric-owner \
-                --no-xattrs --mode='g+w' -C "$SRC" .
+                --no-xattrs --mode='g+w' -C "$SRC" . \
+                || die "could not build $TAR"
+            # After the archive, so an interrupted build is not taken for a
+            # finished one on the next run.
+            printf '%s\n' "$LAUNCHD_SHA" > "$TAR_BUILD"
         fi
         ok "streaming $(du -h "$TAR" | cut -f1) to /Applications"
         timeout 1800 "$SSHPASS" -p "$PW" ssh $SSHOPT "$DEV" \
