@@ -456,6 +456,33 @@ int liter8_load_tweaks(void) {
     }
     if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
     if (!file_exists(kLoader)) return 0;
+    /* Loading the loader here, from the constructor, rather than inserting it.
+     *
+     * The fork this port comes from records the opposite, at its own lhook.c:97:
+     * "Loading ElleKit by hand from a constructor is what killed SpringBoard
+     * during testing; inserted directly it returns 0 and the host survives,
+     * which is measured, not assumed." That is a real measurement, but on
+     * t8020 / iPadOS 26.7.1, and it is about an insert this path cannot perform:
+     * a Data-volume library has no sandbox extension at DYLD_INSERT_LIBRARIES
+     * time, which is the whole reason the grants above are consumed first (see
+     * the spawn interposition comment).
+     *
+     * Measured here instead, on n104 / 24B5099f, 2026-10-12, with injection
+     * armed and `launchctl kickstart -k user/501/com.apple.SpringBoard`:
+     *
+     *   enabled  -> SpringBoard respawned as pid 4521, logged "ElleKit loaded
+     *               pid=4521 executable=SpringBoard" from this dlopen, then held
+     *               the same pid across repeated checks. Reproduced once more as
+     *               pid 4635. No SpringBoard crash report was written.
+     *   disabled -> respawned as pid 4605, zero ElleKit loads device-wide, also
+     *               stable. That half is what shows the enabled result is not
+     *               just injection having stayed off.
+     *
+     * So this ordering survives on this platform. If that ever stops being
+     * true, the fix is not to move the load into the insert list: it is to make
+     * the extension available before dyld runs, or to defer the dlopen off the
+     * constructor. The insert list is also third-party-owned, and rewriting it
+     * is what the spawn path deliberately avoids. */
     if (!dlopen(kLoader, RTLD_NOW | RTLD_GLOBAL)) {
         os_log_error(OS_LOG_DEFAULT, "Liter8: ElleKit load failed pid=%d %{public}s", getpid(), dlerror());
         return -2;
