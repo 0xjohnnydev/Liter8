@@ -117,8 +117,44 @@ def main() -> None:
         assert decode_iboot(fields[3][1], len(replacement)) == replacement
         print("[pass] modified IM4P decodes with iBoot LZFSE and preserves PAYP")
 
-        payload.write_bytes(b"")
         sentinel = b"previous complete artifact"
+
+        # An LZFSE stream whose first block is not bvx2, with no descriptor to
+        # fall back on. Only bvx2 was recognised, so each of these was silently
+        # rewritten uncompressed with its descriptor dropped, which is the one
+        # outcome --preserve-compression exists to prevent. The bytes after the
+        # magic are never decoded on this path: the replacement is re-encoded
+        # from scratch, so what is under test is purely the classification.
+        for magic in (b"bvx-", b"bvx1", b"bvxn"):
+            bare = tlv(0x30, b"".join([
+                tlv(0x16, b"IM4P"), tlv(0x16, b"krnl"), tlv(0x16, b"test"),
+                tlv(4, magic + packed[4:]),
+            ]))
+            source.write_bytes(bare)
+            subprocess.run([str(CLI), "im4p", "repack", str(source), str(payload), str(output),
+                            "--preserve-compression"], check=True, capture_output=True)
+            fields = children(output.read_bytes())
+            assert [tag for tag, _, _ in fields] == [0x16, 0x16, 0x16, 4, 0x30], magic
+            assert decode_iboot(fields[3][1], len(replacement)) == replacement, magic
+        print("[pass] every LZFSE block header is preserved as LZFSE, not just bvx2")
+
+        # A descriptor naming an algorithm this cannot reproduce stops the
+        # repack instead of falling through to the payload magic and emitting a
+        # different representation under the original's name.
+        unsupported = tlv(0x30, b"".join([
+            tlv(0x16, b"IM4P"), tlv(0x16, b"krnl"), tlv(0x16, b"test"),
+            tlv(4, packed), tlv(0x30, integer(2) + integer(len(original))),
+        ]))
+        source.write_bytes(unsupported)
+        output.write_bytes(sentinel)
+        result = subprocess.run([str(CLI), "im4p", "repack", str(source), str(payload), str(output),
+                                 "--preserve-compression"], capture_output=True)
+        assert result.returncode != 0, "an unsupported descriptor must not be repacked"
+        assert output.read_bytes() == sentinel
+        print("[pass] an unsupported compression descriptor fails closed")
+
+        source.write_bytes(container)
+        payload.write_bytes(b"")
         output.write_bytes(sentinel)
         result = subprocess.run([str(CLI), "im4p", "repack", str(source), str(payload), str(output),
                                  "--preserve-compression"], capture_output=True)

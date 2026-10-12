@@ -93,4 +93,77 @@ final class MobileActivationDBoundsTests: XCTestCase {
         XCTAssertEqual(target, 0x10, "the control case must resolve inside the image")
         XCTAssertEqual(try candidates(image(gateAt: 0, branch: branch)), 0)
     }
+
+    // MARK: - shape precedence
+    //
+    // Both shapes are present in the same code on every supported build, so the
+    // legacy match short-circuiting the dictionary one is a precedence rule and
+    // not a shortcut. Measured on 24A435, 24A437, 24B5084k and the userland
+    // reference: at the single TBZ gate in the real method, gate+0x60 carries
+    // the legacy ADRP/ADD/LDR and the TBZ target carries all fourteen
+    // dictionary-fallback instructions. Scanning both and rejecting the overlap
+    // therefore yields two candidates at one gate, after which
+    // `uniqueActivationStateMethod` finds no method with exactly one and the
+    // resolve fails with noCandidate. Confirmed by doing it: all four binaries
+    // stopped resolving. These pin the precedence so it cannot be removed
+    // quietly.
+
+    private var legacyBody: [UInt32] {
+        [0x9000_0008, 0x9100_0108, 0xF940_0100]
+    }
+
+    /// The 23H30 one-entry-dictionary body, in the order the locator requires.
+    private var dictionaryBody: [UInt32] {
+        [
+            0x9000_0008, 0x9100_0108, 0xF940_0108, 0xF900_0FE8,
+            0x9000_0008, 0x9100_0108, 0xF940_0108, 0xF900_13E8,
+            0x9000_0008, 0xF940_0100, 0x9100_83E2, 0x9100_63E3,
+            0x5280_0024, 0x9400_0000,
+        ]
+    }
+
+    private func buffer(_ groups: [(Int, [UInt32])], count: Int = 0x200) -> BinaryImage {
+        var bytes = [UInt8](repeating: 0, count: count)
+        for (offset, words) in groups {
+            for (index, word) in words.enumerated() {
+                let at = offset + index * 4
+                withUnsafeBytes(of: word.littleEndian) { source in
+                    bytes.replaceSubrange(at..<(at + 4), with: source)
+                }
+            }
+        }
+        return BinaryImage(data: Data(bytes))
+    }
+
+    func testLegacyShapeTakesPrecedenceWhenBothArePresent() throws {
+        let found = try MobileActivationDResolver().findStateLoadCandidates(
+            in: buffer([
+                (0x00, [tbzW22Bit0(words: 0x40)]),   // TBZ target 0x100
+                (0x60, legacyBody),
+                (0x100, dictionaryBody),
+            ]),
+            methodOffset: 0
+        )
+        XCTAssertEqual(found.count, 1, "one gate matching both shapes is one candidate")
+        XCTAssertEqual(found.first?.kind, .legacy)
+        XCTAssertEqual(found.first?.load, 0x60)
+    }
+
+    /// Neither half of the test above can pass because one shape quietly
+    /// stopped matching, so each is also checked on its own.
+    func testEachShapeIsFoundOnItsOwn() throws {
+        let legacy = try MobileActivationDResolver().findStateLoadCandidates(
+            in: buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x60, legacyBody)]),
+            methodOffset: 0
+        )
+        XCTAssertEqual(legacy.map(\.kind), [.legacy])
+        XCTAssertEqual(legacy.first?.load, 0x60)
+
+        let dictionary = try MobileActivationDResolver().findStateLoadCandidates(
+            in: buffer([(0x00, [tbzW22Bit0(words: 0x40)]), (0x100, dictionaryBody)]),
+            methodOffset: 0
+        )
+        XCTAssertEqual(dictionary.map(\.kind), [.dictionaryFallback])
+        XCTAssertEqual(dictionary.first?.fallback, 0x100)
+    }
 }

@@ -283,10 +283,12 @@ public struct KernelVMMapProtectResolver: Sendable {
         for range in layout.executableFileRanges {
             var offset = (range.lowerBound + 3) & ~UInt64(3)
             while offset + 24 <= range.upperBound {
-                if try Self.gate255.matches(in: image, at: offset) {
+                if try Self.gate255.matches(in: image, at: offset),
+                   Self.registersFlow(try Self.words(6, at: offset, in: image), shape: .darwin255) {
                     hits.append((offset, .darwin255))
                 } else if offset + 28 <= range.upperBound,
-                          try Self.gate264.matches(in: image, at: offset) {
+                          try Self.gate264.matches(in: image, at: offset),
+                          Self.registersFlow(try Self.words(7, at: offset, in: image), shape: .darwin264) {
                     hits.append((offset, .darwin264))
                 }
                 offset += 4
@@ -299,9 +301,22 @@ public struct KernelVMMapProtectResolver: Sendable {
             )
         }
 
+        // The executable range holding the gate, so the follow-up stays in code.
+        // `conditionalTarget` yields a file offset and
+        // `virtualAddress(forFileOffset:)` succeeds for any mapped offset, so
+        // without this a branch that drifted to point outside the code would
+        // still encode, and `uniqueWord` would then scan raw bytes: a data word
+        // that happens to encode the expected TBNZ/TBZ would be accepted as the
+        // follow-up decision and patched. The result is a kernel patch against
+        // data, emitted with no sign that anything was wrong.
+        guard let code = layout.executableFileRanges.first(where: { $0.contains(hit.offset) }) else {
+            throw PatchfinderError.noCandidate("vm_map_protect gate outside any executable range")
+        }
+
         let branchOffset = hit.offset + (hit.shape == .darwin255 ? 5 : 6) * 4
         let branch = try image.readUInt32(at: branchOffset)
         guard let skipTarget = ARM64.conditionalTarget(instruction: branch, at: branchOffset),
+              code.contains(skipTarget),
               let unconditional = try Self.encodeBranch(from: branchOffset, to: skipTarget, layout: layout)
         else {
             throw PatchfinderError.noCandidate("vm_map_protect skip branch")
@@ -327,7 +342,7 @@ public struct KernelVMMapProtectResolver: Sendable {
             // tbnz w0-15, #7 within the next three instructions.
             guard let site = try Self.uniqueWord(
                 "map_disallow_new_exec decision",
-                from: skipTarget, count: 3, in: image, where: {
+                from: skipTarget, count: 3, in: image, within: code, where: {
                     $0 & 0xfff8_0010 == 0x3738_0000
                 }
             ) else {
@@ -346,7 +361,7 @@ public struct KernelVMMapProtectResolver: Sendable {
             // tb(n)z w0-15, #9 within the next eight instructions.
             guard let site = try Self.uniqueWord(
                 "vm_map_protect bit-9 test",
-                from: skipTarget, count: 8, in: image, where: {
+                from: skipTarget, count: 8, in: image, within: code, where: {
                     $0 & 0xfef8_0010 == 0x3648_0000
                 }
             ) else {
@@ -384,13 +399,19 @@ public struct KernelVMMapProtectResolver: Sendable {
     /// nothing unusual, which in a boot kernel means altering the wrong
     /// decision. The primary gate above is unique; that says nothing about the
     /// follow-up window.
+    ///
+    /// `range` is the executable range holding the gate, and the scan stops at
+    /// its end rather than at the end of the image. Bounding by the image meant
+    /// a window starting near the end of a code segment read on into whatever
+    /// followed it, and a data word encoding the expected bit test would be
+    /// taken for the decision.
     private static func uniqueWord(_ name: String, from start: UInt64, count: Int,
-                                   in image: BinaryImage,
+                                   in image: BinaryImage, within range: Range<UInt64>,
                                    where matches: (UInt32) -> Bool) throws -> UInt64? {
         var hits: [UInt64] = []
         for index in 0..<count {
             let at = start + UInt64(index * 4)
-            guard at + 4 <= UInt64(image.count) else { break }
+            guard at + 4 <= range.upperBound else { break }
             if matches(try image.readUInt32(at: at)) { hits.append(at) }
         }
         guard hits.count <= 1 else {
@@ -398,6 +419,40 @@ public struct KernelVMMapProtectResolver: Sendable {
         }
         return hits.first
     }
+
+    private static func words(_ count: Int, at offset: UInt64,
+                              in image: BinaryImage) throws -> [UInt32] {
+        try (0..<count).map { try image.readUInt32(at: offset + UInt64($0 * 4)) }
+    }
+
+    /// Does the matched gate's data flow the way the shape says it does?
+    ///
+    /// The masks pin every opcode and immediate but leave the register fields
+    /// free, so a drift or mutation that changed one operand still matched
+    /// uniquely and the resolver went on to force an unrelated conditional
+    /// branch in a boot kernel. Three relationships carry the gate's meaning:
+    ///
+    ///   - the `#6` the MOV produces is what the BIC clears bits from
+    ///   - the BIC result is what the CMP tests
+    ///   - the AND result is what the CCMP tests
+    ///
+    /// Deliberately not more than that. Requiring the BIC to write back to its
+    /// own source, which is what both observed encodings happen to do, would
+    /// reject an equivalent form that used a separate temporary.
+    private static func registersFlow(_ words: [UInt32], shape: Shape) -> Bool {
+        let and: UInt32, mov: UInt32, bic: UInt32, cmp: UInt32, ccmp: UInt32
+        switch shape {
+        case .darwin255:
+            (and, mov, bic, cmp, ccmp) = (words[0], words[1], words[2], words[3], words[4])
+        case .darwin264:
+            // Same five, one slot later and with the AND after the BIC.
+            (and, mov, bic, cmp, ccmp) = (words[3], words[1], words[2], words[4], words[5])
+        }
+        return rd(mov) == rn(bic) && rd(bic) == rn(cmp) && rd(and) == rn(ccmp)
+    }
+
+    private static func rd(_ word: UInt32) -> UInt32 { word & 0x1f }
+    private static func rn(_ word: UInt32) -> UInt32 { (word >> 5) & 0x1f }
 
     private static func encodeBranch(from source: UInt64, to target: UInt64,
                                      layout: MachOLayout) throws -> UInt32? {
