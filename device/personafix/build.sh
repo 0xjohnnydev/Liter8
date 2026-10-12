@@ -16,14 +16,20 @@ SDK="${LITER8_IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
 # InstalledContentLibrary with classes of the same names, so the test names its
 # own. The marker owner becomes the invoking user so the test needs no root.
 if command -v clang >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
-    marker="$(mktemp -u /tmp/l8persona-marker.XXXXXX)"
+    # mktemp -d, not -u: -u only picks a name, so between that and the test
+    # writing the marker non-atomically anyone else on the host could put a
+    # symlink there and have this truncate whatever it points at. A private
+    # directory removes the race rather than narrowing it.
+    marker_dir="$(mktemp -d "${TMPDIR:-/tmp}/l8persona-marker.XXXXXX")"
+    marker="$marker_dir/marker"
     xcrun clang -DLITER8_PERSONA_TEST -DL8_PERSONA_MARKER="\"$marker\"" \
         -DL8_PERSONA_OWNER="getuid()" -DL8_IDENTITY_CLASS='"L8TestAppIdentity"' \
         -DL8_USERMGMT_CLASS='"L8TestUserManagement"' \
         -DL8_PRIMARY_SYMBOL='"L8TestPrimaryPersona"' \
         -framework Foundation l8persona.m -o .l8persona-test
     ./.l8persona-test
-    rm -f .l8persona-test "$marker"
+    rm -f .l8persona-test
+    rm -rf "$marker_dir"
 fi
 
 xcrun clang -isysroot "$SDK" -arch arm64 -arch arm64e \

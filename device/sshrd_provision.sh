@@ -1000,14 +1000,25 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     # symlink, and every upload and root readback then follows it: point
     # TweakInject at /mnt1/usr/lib and the payloads land on the System volume
     # while verification reads them back through the same link and says OK.
+    # Root-owned real directories, not links and not writable by anyone else.
+    # mkdir -p is happy with an existing symlink and preserves the permissions
+    # of an existing directory, and lhook loads whatever ends up at these paths
+    # into root processes: a mode-0777 TweakInject lets another account replace a
+    # verified tweak, or plant a symlink for the staging write below to follow.
     must_dev '
 for d in /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit; do
     if [ -L "$d" ]; then echo "SYMLINK $d"; exit 1; fi
     mkdir -p "$d" || exit 1
     if [ -L "$d" ] || [ ! -d "$d" ]; then echo "NOT A DIRECTORY $d"; exit 1; fi
+    set -- $(ls -ldn "$d")
+    case "$1" in
+        ?????w*)    echo "GROUP WRITABLE $d"; exit 1 ;;
+        ????????w*) echo "OTHER WRITABLE $d"; exit 1 ;;
+    esac
+    [ "$3" = 0 ] || { echo "OWNER uid $3 $d"; exit 1; }
 done
 echo DONE_OK
-' "a tweak destination is a symlink or could not be created; refusing to write through it"
+' "a tweak destination is a symlink, writable by another account, or not root owned"
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with
     # no network and no dpkg: the injector, the safe-mode payload it names, and
@@ -1044,6 +1055,10 @@ echo DONE_OK
             continue
         fi
         want=$(shasum -a 256 "$src" | awk '{print $1}')
+        # Unlinked first: put writes with `cat > $dst.new`, which follows a
+        # symlink already sitting there and would have root overwrite its
+        # target. Also clears a stale .new left by an interrupted run.
+        must_dev "rm -f '$dst.new' && echo DONE_OK" "could not clear $dst.new"
         put "$src" "$dst.new"
         sh_dev "cat '$dst.new'" > payload/.work/tweak.staged
         [ "$(shasum -a 256 payload/.work/tweak.staged | awk '{print $1}')" = "$want" ] \
