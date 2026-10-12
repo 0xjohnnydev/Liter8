@@ -88,6 +88,19 @@ from add_ddi_services import (  # noqa: E402
 )
 
 
+def default_step_set(source: str, pattern: str) -> set[str]:
+    """Return the components a shell script runs when given no arguments.
+
+    These sets used to be asserted as a pinned substring of the assignment, so
+    inserting any unrelated step in the middle failed a test about a different
+    component entirely. Membership is what the tests actually mean.
+    """
+    match = re.search(pattern, source, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"no default step assignment matching {pattern}")
+    return set(match.group(1).split())
+
+
 class APFSRoleTests(unittest.TestCase):
     def test_preboot_is_selected_by_role_instead_of_partition_number(self):
         registry = '''+-o Preboot@5 <class AppleAPFSVolume, id 1>
@@ -851,8 +864,10 @@ class ContextTests(unittest.TestCase):
         self.assertTrue((runtime.parent / "tools/sshpass").is_symlink())
 
         # Generated payloads are intentionally resumable across CLI runs.
+        # exist_ok because prepare_runtime copies the whole of device/, so this
+        # directory is already there on any checkout where payloads were built.
         generated = runtime / "payload/operator-note"
-        generated.parent.mkdir()
+        generated.parent.mkdir(exist_ok=True)
         generated.write_text("keep me")
         self.assertEqual(prepare_runtime(context), runtime)
         self.assertEqual(generated.read_text(), "keep me")
@@ -922,7 +937,10 @@ class ContextTests(unittest.TestCase):
 
     def test_userland_provisioning_is_wired_into_device_verification(self):
         provisioner = (DEVICE / "sshrd_provision.sh").read_text()
-        self.assertIn("ticket setup userland pairing screentime injection", provisioner)
+        self.assertLessEqual(
+            {"ticket", "setup", "userland", "pairing", "screentime", "injection"},
+            default_step_set(provisioner, r'^STEPS="([^"]*)"'),
+        )
         self.assertIn("mount -u -o rw /dev/disk1s2", provisioner)
         self.assertIn("Data volume NOT writable", provisioner)
         self.assertIn("verify_userland_patch coreauthd", provisioner)
@@ -1013,7 +1031,10 @@ class ContextTests(unittest.TestCase):
 
         self.assertIn("-install_name /usr/lib/l8pair.dylib", builder)
         self.assertIn('"$BASE/l8pair_auth.m"', builder)
-        self.assertIn("sileo helpers cache injection pairing", payload_builder)
+        self.assertLessEqual(
+            {"sileo", "helpers", "cache", "injection", "pairing"},
+            default_step_set(payload_builder, r'^WANT="\$\{\*:-([^}]*)\}"'),
+        )
         self.assertIn('"lockdownd": ("/usr/lib/l8pair.dylib"', fixups)
 
         self.assertIn('strcmp(program, "remotepairingdeviced")', remotexpc_source)
@@ -1072,7 +1093,7 @@ class ContextTests(unittest.TestCase):
         self.assertIn("kRatchetStateBytes = 0x14b", coreauth_source)
         self.assertIn("length >= kRatchetStateBytes", coreauth_source)
         self.assertIn("method_setImplementation", coreauth_source)
-        self.assertIn('dylib_path = "/usr/lib/l8coreauth.dylib"', fixups)
+        self.assertIn('"coreauthd": ("/usr/lib/l8coreauth.dylib"', fixups)
 
     def test_userland_builder_preserves_identity_and_entitlements(self):
         liter8 = SCRIPTS.parent / ".build/debug/liter8"
