@@ -184,8 +184,11 @@ ek_broken_links() {
     local bad=() spec link want got
     if [[ -z "$EK_READLINK" ]]; then
         EK_READLINK=$(sh_dev "$RPATH; command -v readlink >/dev/null && echo yes || echo no" | tr -d '\r')
+        # stderr, not stdout: this function's stdout IS the broken-link list and
+        # the callers word-split it, so a warning printed here became fake
+        # broken links and left finalize incomplete with every link resolving.
         [[ "$EK_READLINK" == yes ]] \
-            || printf '    [!] no readlink on the device PATH; link targets unverified, only resolution\n'
+            || printf '    [!] no readlink on the device PATH; link targets unverified, only resolution\n' >&2
     fi
     for spec in $EK_LINKS; do
         link=${spec%%:*}

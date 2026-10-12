@@ -1310,7 +1310,24 @@ symbolic_mode() {
 # device, which is the normal end state of the documented workflow.
 tweak_entry_fault() {
     tweak_fields "$1"
-    sh_dev "cat '$tweak_dst'" > payload/.work/verify.tweak 2>/dev/null || true
+    # Which path the content is read from. Normally the entry's own, but not for
+    # a path the package replaced with a symlink: ElleKit's link text is the
+    # absolute /var/jb/usr/lib/ellekit/libinjector.dylib, and in SSHRD /var is
+    # the ramdisk's own read-only tree while the Data volume is /mnt2 (the same
+    # mapping install_bootstrap.sh records). Following it from here lands in the
+    # wrong root and returns nothing, so a correctly finalized loader read as
+    # absent. The link names an image that is itself an entry in this table, so
+    # its target is translated to the mounted path and read there.
+    tf_read=$tweak_dst
+    tf_islink=0
+    case "$tweak_pkg" in
+        pkglink=*)
+            if sh_dev "[ -L '$tweak_dst' ]" >/dev/null 2>&1; then
+                tf_islink=1
+                tf_read=/mnt2/jb${tweak_pkg#*=./var/jb}
+            fi ;;
+    esac
+    sh_dev "cat '$tf_read'" > payload/.work/verify.tweak 2>/dev/null || true
     [ -s payload/.work/verify.tweak ] || { echo absent; return; }
     tf_got=$(shasum -a 256 payload/.work/verify.tweak | awk '{print $1}')
 
@@ -1341,9 +1358,13 @@ tweak_entry_fault() {
     [ -n "$tf_pkg" ] \
         || { echo "content, and no ellekit.deb here to compare the package form"; return; }
     [ "$tf_got" = "$tf_pkg" ] || { echo content; return; }
+    # Whether it is a link was decided at the top, because that is what chose
+    # the path just read. The link text itself is not compared here: readlink is
+    # not a tool this ramdisk is known to have. finalize.sh does compare it, on
+    # a booted device where readlink exists.
     case "$tweak_pkg" in
         pkglink=*)
-            sh_dev "[ -L '$tweak_dst' ]" >/dev/null 2>&1 \
+            [ "$tf_islink" = 1 ] \
                 || echo "the package ships a symlink here, found $tf_mode" ;;
     esac
 }
