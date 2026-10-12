@@ -52,6 +52,58 @@ final class KernelCodeSigningResolverTests: XCTestCase {
 
     private func nop(_ n: Int) -> [UInt32] { Array(repeating: 0xD503_201F, count: n) }
 
+    /// `__TEXT_EXEC` holding `words`, followed immediately in both file and VM
+    /// by a non-executable `__DATA` holding `dataWords`.
+    ///
+    /// Contiguous on purpose: it lets a branch at the end of the code reach the
+    /// first word of the data segment, which is the case a resolver must refuse
+    /// to follow. Built separately from `image(words:)` so the sixteen tests
+    /// using that one keep the layout they were written against.
+    private func imageWithDataSegment(
+        words: [UInt32], dataWords: [UInt32], textFileOffset: UInt64 = 0x4000
+    ) -> BinaryImage {
+        let textVMAddr: UInt64 = 0xFFFF_FFF0_0814_8000
+        let codeBytes = UInt64(words.count * 4)
+        var data = Data(count: Int(textFileOffset))
+        data.replaceSubrange(0..<4, with: withUnsafeBytes(of: UInt32(0xFEED_FACF).littleEndian, Array.init))
+        data.replaceSubrange(16..<20, with: withUnsafeBytes(of: UInt32(2).littleEndian, Array.init))
+
+        func segment(_ name: String, vmaddr: UInt64, fileoff: UInt64,
+                     size: UInt64, prot: UInt32) -> Data {
+            var command = Data()
+            func append<T: FixedWidthInteger>(_ value: T) {
+                command.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+            }
+            append(UInt32(0x19))                               // LC_SEGMENT_64
+            append(UInt32(72))                                 // cmdsize
+            command.append(Data(name.utf8))
+            command.append(Data(count: 16 - name.utf8.count))
+            append(vmaddr)
+            append(size)                                       // vmsize
+            append(fileoff)
+            append(size)                                       // filesize
+            append(prot)                                       // maxprot
+            append(prot)                                       // initprot
+            append(UInt32(0))                                  // nsects
+            append(UInt32(0))                                  // flags
+            return command
+        }
+
+        var commands = segment("__TEXT_EXEC", vmaddr: textVMAddr, fileoff: textFileOffset,
+                               size: codeBytes, prot: 5)                      // r-x
+        commands.append(segment("__DATA", vmaddr: textVMAddr + codeBytes,
+                                fileoff: textFileOffset + codeBytes,
+                                size: UInt64(dataWords.count * 4), prot: 3))  // rw-
+        data.replaceSubrange(32..<(32 + commands.count), with: commands)
+
+        for word in words + dataWords {
+            data.append(contentsOf: withUnsafeBytes(of: word.littleEndian, Array.init))
+        }
+        data.append(Data(fingerprint.utf8))
+        data.append(0)
+        return BinaryImage(data: data)
+    }
+
     // MARK: - PPL allow-invalid
 
     private var pplProducer: [UInt32] {
@@ -229,6 +281,89 @@ final class KernelCodeSigningResolverTests: XCTestCase {
             XCTAssertEqual(name, "vm_map_protect bit-9 test")
             XCTAssertEqual(offsets.count, 2)
         }
+    }
+
+    // MARK: - gate register flow
+    //
+    // The masks pin every opcode and immediate but leave the register fields
+    // free, so a gate whose operands no longer connect still matched uniquely
+    // and the resolver forced an unrelated conditional branch in a boot kernel.
+
+    func testVMMapProtectRejectsADriftedRegisterIn255() throws {
+        // cmp w10,#0 where the BIC wrote w9: the BIC result is no longer what
+        // the CMP tests, so this is not the gate, though the masked pattern
+        // still matches it word for word.
+        let gate: [UInt32] = [
+            0x120a_0008, 0x5280_00c9, 0x0a20_0129,
+            0x7100_015f, 0x7a40_0900, 0x5400_0061,
+        ]
+        XCTAssertEqual(gate[3] & 0xffff_fc1f, 0x7100_001f, "must still satisfy the mask")
+        let words = nop(2) + gate + nop(2) + [0x3738_0008] + nop(2)
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: image(words: words))) { error in
+            guard case let PatchfinderError.noCandidate(name) = error else {
+                return XCTFail("expected noCandidate, got \(error)")
+            }
+            XCTAssertEqual(name, "vm_map_protect execute-downgrade gate")
+        }
+    }
+
+    /// Separately from 25.5 because the five words sit at different indices in
+    /// this encoding, so a wrong index would pass the test above regardless.
+    func testVMMapProtectRejectsADriftedRegisterIn264() throws {
+        // ccmp w11 where the AND wrote w8.
+        let gate: [UInt32] = [
+            0xF940_0836, 0x5280_00C9, 0x0A34_0129, 0x120A_0108,
+            0x7100_013F, 0x7a40_0960, 0x5400_0041,
+        ]
+        XCTAssertEqual(gate[5] & 0xffff_fe1f, 0x7a40_0800, "must still satisfy the mask")
+        let words = nop(2) + gate + nop(1) + [0xD503_201F, 0x3648_0068] + nop(4)
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: imageWithDataSegment(
+            words: words, dataWords: []
+        ))) { error in
+            guard case PatchfinderError.noCandidate = error else {
+                return XCTFail("expected noCandidate, got \(error)")
+            }
+        }
+    }
+
+    // MARK: - follow-up window stays in code
+
+    /// The skip branch is followed to find the decision to neutralise. A target
+    /// outside the executable range still encoded, because a file offset in any
+    /// mapped segment resolves to a virtual address, and the window scan then
+    /// read raw data where a word encoding the expected TBNZ was taken for the
+    /// decision and patched.
+    func testVMMapProtectRefusesASkipTargetInADataSegment() throws {
+        let gate: [UInt32] = [
+            0x120a_0008, 0x5280_00c9, 0x0a20_0129,
+            0x7100_013f, 0x7a40_0900, 0x5400_0021,   // b.ne +4: one past the code
+        ]
+        let words = nop(2) + gate
+        // What the old scan would have found and patched.
+        let dataWords: [UInt32] = [0x3738_0008] + nop(2)
+        let image = imageWithDataSegment(words: words, dataWords: dataWords)
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: image)) { error in
+            guard case let PatchfinderError.noCandidate(name) = error else {
+                return XCTFail("expected noCandidate, got \(error)")
+            }
+            XCTAssertEqual(name, "vm_map_protect skip branch")
+        }
+    }
+
+    /// The same gate and the same branch displacement, with the target inside
+    /// the code. Without this the test above would pass for a resolver that had
+    /// simply stopped working.
+    func testVMMapProtectStillResolvesWhenTheSkipTargetIsInCode() throws {
+        let gate: [UInt32] = [
+            0x120a_0008, 0x5280_00c9, 0x0a20_0129,
+            0x7100_013f, 0x7a40_0900, 0x5400_0021,   // b.ne +4
+        ]
+        let words = nop(2) + gate + [0x3738_0008] + nop(2)
+        let records = try KernelVMMapProtectResolver().resolve(
+            in: imageWithDataSegment(words: words, dataWords: nop(3))
+        )
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[1].offset, 0x4000 + UInt64(8 * 4))
     }
 
     /// A second matching test outside the window is not ambiguity, so the
