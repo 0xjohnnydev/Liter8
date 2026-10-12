@@ -52,9 +52,15 @@ public struct MobileActivationDResolver: Sendable {
             // The selector also appears in a forwarding/protocol method on
             // this binary. Only MobileActivationDaemon's implementation owns
             // the data-migration gate and fallback state-load shape.
+            // A method outside every executable range is not this method, so it
+            // is simply not a candidate rather than an error here.
+            guard let executable = metadata.layout.executableFileRanges.first(
+                where: { $0.contains(method.implementationOffset) }
+            ) else { continue }
             if try findStateLoadCandidates(
                 in: metadata.image,
-                methodOffset: method.implementationOffset
+                methodOffset: method.implementationOffset,
+                within: executable
             ).count == 1 {
                 matches.append(method)
             }
@@ -108,9 +114,17 @@ public struct MobileActivationDResolver: Sendable {
         method: ObjCMethod
     ) throws -> [PatchRecord] {
         let activatedObject = try findConstantString("Activated", metadata: metadata)
+        guard let executable = metadata.layout.executableFileRanges.first(
+            where: { $0.contains(method.implementationOffset) }
+        ) else {
+            throw PatchfinderError.noCandidate(
+                "\(Self.name).activation-state: the method is outside every executable range"
+            )
+        }
         let candidates = try findStateLoadCandidates(
             in: image,
-            methodOffset: method.implementationOffset
+            methodOffset: method.implementationOffset,
+            within: executable
         )
         guard let candidate = candidates.only else {
             if candidates.isEmpty { throw PatchfinderError.noCandidate("\(Self.name).activation-state") }
@@ -276,12 +290,23 @@ public struct MobileActivationDResolver: Sendable {
     /// plain buffer. The public entry point needs a Mach-O carrying the real
     /// Objective-C method, which no synthetic input can reasonably provide, and
     /// the fixture binaries that do are private and skip when absent.
+    /// `within` is the executable range holding the method, and the scan window
+    /// stops at its end rather than at the end of the image.
+    ///
+    /// Bounding by the image meant a migration TBZ whose target drifted into an
+    /// adjacent mapped non-executable section, still inside the 0x300-byte
+    /// window, was matched against fourteen instruction-shaped data words. The
+    /// dictionary fallback would then replace the gate with a branch into that
+    /// data and rewrite three of its words, which is a corrupt
+    /// mobileactivationd emitted with no sign anything was wrong. Same defect
+    /// the vm_map_protect follow-up had, in the resolver next door.
     func findStateLoadCandidates(
         in image: BinaryImage,
-        methodOffset: UInt64
+        methodOffset: UInt64,
+        within executable: Range<UInt64>
     ) throws -> [StateLoadCandidate] {
         var matches: [StateLoadCandidate] = []
-        let end = min(UInt64(image.count), methodOffset + 0x300)
+        let end = min(executable.upperBound, methodOffset + 0x300)
         var gate = methodOffset
         while gate + 4 <= end {
             let branch = try image.readUInt32(at: gate)

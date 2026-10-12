@@ -350,6 +350,48 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         }
     }
 
+    /// The bit-9 decision is a third place a branch target is taken, after the
+    /// skip branch and the search window. A `tbz` is turned into an
+    /// unconditional branch to its own target, and that target was unchecked.
+    func testVMMapProtectRefusesABit9TargetInADataSegment() throws {
+        let gate: [UInt32] = [
+            0xF940_0836, 0x5280_00C9, 0x0A34_0129, 0x120A_0108,
+            0x7100_013F, 0x7A40_0900, 0x5400_0041,   // b.ne +2
+        ]
+        // nop, then the skip target, then the tbz. Its displacement puts the
+        // branch one word past the end of the code.
+        let tbz9: UInt32 = 0x3648_0048                // tbz w8,#9,+2
+        let words = nop(2) + gate + nop(1) + [0xD503_201F, tbz9]
+        let image = imageWithDataSegment(words: words, dataWords: nop(3))
+        let site = 0x4000 + UInt64((2 + 7 + 1 + 1) * 4)
+        let codeEnd = 0x4000 + UInt64(words.count * 4)
+        XCTAssertGreaterThanOrEqual(
+            ARM64.testBranchTarget(instruction: tbz9, at: site) ?? 0, codeEnd,
+            "the control for this test is that the tbz target lands past the code"
+        )
+        XCTAssertThrowsError(try KernelVMMapProtectResolver().resolve(in: image)) { error in
+            guard case let PatchfinderError.noCandidate(name) = error else {
+                return XCTFail("expected noCandidate, got \(error)")
+            }
+            XCTAssertEqual(name, "vm_map_protect bit-9 branch")
+        }
+    }
+
+    /// The same tbz with its target inside the code, so the test above cannot
+    /// pass for a resolver that merely stopped finding the bit-9 decision.
+    func testVMMapProtectResolvesABit9TargetInsideCode() throws {
+        let gate: [UInt32] = [
+            0xF940_0836, 0x5280_00C9, 0x0A34_0129, 0x120A_0108,
+            0x7100_013F, 0x7A40_0900, 0x5400_0041,
+        ]
+        let words = nop(2) + gate + nop(1) + [0xD503_201F, 0x3648_0048] + nop(3)
+        let records = try KernelVMMapProtectResolver().resolve(
+            in: imageWithDataSegment(words: words, dataWords: nop(3))
+        )
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual((records[1].replacementWord ?? 0) & 0xFC00_0000, 0x1400_0000)
+    }
+
     /// The same gate and the same branch displacement, with the target inside
     /// the code. Without this the test above would pass for a resolver that had
     /// simply stopped working.

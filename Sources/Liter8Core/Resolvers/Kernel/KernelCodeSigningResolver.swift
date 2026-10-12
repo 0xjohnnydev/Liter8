@@ -372,7 +372,15 @@ public struct KernelVMMapProtectResolver: Sendable {
             if word & 0x0100_0000 != 0 {
                 replacement = ARM64.nop                      // tbnz: never take it
             } else {
+                // Same constraint the skip branch above gets, and for the same
+                // reason: encodeBranch only needs both offsets to map to
+                // virtual addresses, so a tbz drifted to point outside the code
+                // would encode an unconditional branch into data rather than
+                // failing closed. Constraining the skip branch and the search
+                // window was not enough on its own; this is the third place a
+                // branch target is taken, and it was the one left unchecked.
                 guard let target = ARM64.testBranchTarget(instruction: word, at: site),
+                      code.contains(target),
                       let always = try Self.encodeBranch(from: site, to: target, layout: layout) else {
                     throw PatchfinderError.noCandidate("vm_map_protect bit-9 branch")
                 }
