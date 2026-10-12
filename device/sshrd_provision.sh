@@ -1348,6 +1348,15 @@ tweak_marker() {
     esac
 }
 
+# The opposite case: a marker the device is meant to be carrying, where both
+# absent and malformed are faults. Testing only for existence reported OK for
+# markers l8pair.c and l8remotepairing.c then reject on exactly the terms
+# marker_state checks, which leaves the fallback off while this calls it on.
+required_marker() {
+    state=$(marker_state "$1")
+    case "$state" in BAD*) echo "MISMATCH $state" ;; *) echo "$state" ;; esac
+}
+
 # `ls -ln` is the only mode reader this ramdisk can be relied on for, so the
 # octal modes in TWEAK_SET are matched against their symbolic form. Listed
 # rather than computed, and fatal on anything unlisted, so adding a mode to the
@@ -1587,9 +1596,9 @@ fi
 note "l8fdr dylib" "$fdr_library_state"
 # Reported separately from the dylib: with the dylib present and the marker gone the
 # bypass is deliberately inert, which is a recovery state rather than a broken one.
-note "FDR sik bypass marker" "$(marker_state /mnt1/usr/lib/.liter8-fdr-sik-bypass)"
-note "pairing fallback marker" "$(sh_dev '[ -f /mnt2/root/Library/Lockdown/.liter8-pairing-fallback ] && [ ! -L /mnt2/root/Library/Lockdown/.liter8-pairing-fallback ] && echo OK || echo MISSING' | tr -d '\r')"
-note "RemoteXPC fallback marker" "$(sh_dev '[ -f /mnt1/usr/lib/.liter8-remotepairing-fallback ] && [ ! -L /mnt1/usr/lib/.liter8-remotepairing-fallback ] && echo OK || echo MISSING' | tr -d '\r')"
+note "FDR sik bypass marker" "$(required_marker /mnt1/usr/lib/.liter8-fdr-sik-bypass)"
+note "pairing fallback marker" "$(required_marker /mnt2/root/Library/Lockdown/.liter8-pairing-fallback)"
+note "RemoteXPC fallback marker" "$(required_marker /mnt1/usr/lib/.liter8-remotepairing-fallback)"
 note "pairing fallback key" "$(sh_dev '[ -s /mnt2/root/Library/Lockdown/liter8_pairing_key.der ] && echo generated || echo pending' | tr -d '\r')"
 
 sh_dev '/bin/cat /mnt2/db/com.apple.xpc.launchd/disabled.plist' \
