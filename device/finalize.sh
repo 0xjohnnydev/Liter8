@@ -151,20 +151,51 @@ say "ElleKit package"
 # checked on download.
 . ./ellekit.pin
 EK_DEB=payload/tweaks/ellekit.deb
-EK_LINKS=(/var/jb/usr/lib/TweakLoader.dylib /var/jb/usr/lib/libsubstrate.dylib
-          /var/jb/usr/lib/libhooker.dylib /var/jb/usr/lib/libblackjack.dylib
-          /var/jb/usr/lib/TweakInject.dylib
-          /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate
-          /var/jb/Library/MobileSubstrate/DynamicLibraries)
+
+# link:target, read out of the package itself rather than guessed:
+#   ar x ellekit.deb && xz -dc data.tar.xz | tar tvf -
+# lists all seven as symlinks with these targets. The pin carries a digest, so
+# a version that changed them could not be installed without bumping the pin.
+EK_LINKS=(
+    "/var/jb/usr/lib/TweakLoader.dylib:/var/jb/usr/lib/ellekit/libinjector.dylib"
+    "/var/jb/usr/lib/TweakInject.dylib:/var/jb/usr/lib/ellekit/libinjector.dylib"
+    "/var/jb/usr/lib/libsubstrate.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/usr/lib/libhooker.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/usr/lib/libblackjack.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/Library/MobileSubstrate/DynamicLibraries:/var/jb/usr/lib/TweakInject"
+)
 
 # What has to be true after this step whether or not it installed anything.
 # A finalize interrupted between dpkg registering the package and this running
 # leaves the competing boot script in place and the links unchecked, and the
 # retry must not accept that state just because dpkg says "installed".
+#
+# Resolution alone is not the check. `[ -e ]` passed for a link repointed at any
+# other existing file: aim TweakLoader.dylib at MobileSafety.dylib and the old
+# check reported ElleKit complete while lhook dlopens the wrong image and no
+# TweakInject payload loads at all. The target is compared, and a symlink is
+# required, so a regular file left where the package wants a link is caught too.
+#
+# readlink is read once and cached: an absent tool prints nothing, which would
+# read as "every target is wrong" instead of "this was not checked".
+EK_READLINK=""
 ek_broken_links() {
-    local bad=() link
-    for link in $EK_LINKS; do
-        sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 || bad+=("$link")
+    local bad=() spec link want got
+    if [[ -z "$EK_READLINK" ]]; then
+        EK_READLINK=$(sh_dev "$RPATH; command -v readlink >/dev/null && echo yes || echo no" | tr -d '\r')
+        [[ "$EK_READLINK" == yes ]] \
+            || printf '    [!] no readlink on the device PATH; link targets unverified, only resolution\n'
+    fi
+    for spec in $EK_LINKS; do
+        link=${spec%%:*}
+        want=${spec#*:}
+        if [[ "$EK_READLINK" != yes ]]; then
+            sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 || bad+=("$link")
+            continue
+        fi
+        got=$(sh_dev "$RPATH; [ -L '$link' ] && [ -e '$link' ] && readlink '$link'" | tr -d '\r')
+        [[ "$got" == "$want" ]] || bad+=("$link")
     done
     print -r -- "${bad[@]}"
 }
@@ -209,8 +240,23 @@ elif (( EK_INSTALLED )); then
         skip "ellekit $ELLEKIT_VER already installed and complete"
     fi
 elif [[ ! -f "$EK_DEB" ]]; then
-    skip "$EK_DEB absent; run ./fetch_payloads.sh tweaks"
-    FINALIZE_INCOMPLETE=1
+    # An absent archive is two different states, and treating both as incomplete
+    # made the optional ElleKit download mandatory one stage after provisioning
+    # stopped requiring it: with only ellekit.space blocked, fetch and provision
+    # both skip the tweak set by design, and `fw finalize` then still exited
+    # nonzero with every required bootstrap and boot-job check passing.
+    #
+    # The loader on the device is what separates them. Present means
+    # provisioning installed the tweak stack and the package is still owed:
+    # without its dpkg record a tweak declaring Depends: mobilesubstrate cannot
+    # be configured. Absent means there is no tweak stack to finish.
+    if sh_dev "$RPATH; [ -e /var/jb/usr/lib/TweakLoader.dylib ]" >/dev/null 2>&1; then
+        skip "the loader is installed but $EK_DEB is absent; run ./fetch_payloads.sh tweaks"
+        skip "until then a tweak needing Depends: mobilesubstrate cannot configure"
+        FINALIZE_INCOMPLETE=1
+    else
+        skip "no tweak stack provisioned and no $EK_DEB; tweak support is off, not unfinished"
+    fi
 elif (( CHECK_ONLY )); then
     skip "ellekit is not installed; this step would install $EK_DEB"
     FINALIZE_INCOMPLETE=1
