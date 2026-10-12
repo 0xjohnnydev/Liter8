@@ -871,6 +871,16 @@ tweak_pkg_members() {
     done | sort -u
 }
 
+# The mode ellekit.pin records for one device path, or nothing if the pin does
+# not describe it. Same table finalize.sh checks against, so the two scripts
+# cannot disagree about what the package ships.
+tweak_pkg_mode() {
+    for entry in $ELLEKIT_FILE_MODES; do
+        [ "${entry#*:}" = "$1" ] && { echo "${entry%%:*}"; return 0; }
+    done
+    return 0
+}
+
 # sha256 of one member of ElleKit's deb, extracted once and cached. Needed to
 # recognise the post-finalize form of the three paths dpkg owns. Prints nothing
 # when the deb is absent, which the callers treat as "cannot compare".
@@ -884,7 +894,11 @@ tweak_pkg_hash() {
     # `fw provision --check` refused to call the boot safe until someone deleted
     # the directory by hand. Testing for the members instead is not enough
     # either, because tar interrupted mid-member leaves a short file that exists.
-    if [ ! -f payload/.work/ekpkg/.complete ]; then
+    # The marker carries the digest it was extracted from, not just its own
+    # existence. A persistent work directory survives a pin bump, so a marker
+    # that said only "finished" kept serving the previous package's members as
+    # the oracle and would have accepted a device still on the old layout.
+    if [ "$(cat payload/.work/ekpkg/.complete 2>/dev/null)" != "$ELLEKIT_SHA" ]; then
         rm -rf payload/.work/ekpkg
         mkdir -p payload/.work/ekpkg || return 0
         # Named members only, for the reason fetch_payloads.sh gives: the full
@@ -902,7 +916,7 @@ tweak_pkg_hash() {
         for member in $(tweak_pkg_members); do
             [ -f "payload/.work/ekpkg/$member" ] || return 0
         done
-        : > payload/.work/ekpkg/.complete
+        printf '%s\n' "$ELLEKIT_SHA" > payload/.work/ekpkg/.complete
     fi
     [ -f "payload/.work/ekpkg/$1" ] || return 0
     shasum -a 256 "payload/.work/ekpkg/$1" | awk '{print $1}'
@@ -1380,8 +1394,8 @@ tweak_entry_fault() {
         return
     fi
 
-    # The form ElleKit's package leaves behind. Only the three paths carrying a
-    # package form may take it, and the mode is dpkg's to choose, not ours.
+    # The form ElleKit's package leaves behind. Only the paths carrying a package
+    # form may take it.
     case "$tweak_pkg" in
         pkg=*|pkglink=*) ;;
         *) echo "content"; return ;;
@@ -1390,6 +1404,16 @@ tweak_entry_fault() {
     [ -n "$tf_pkg" ] \
         || { echo "content, and no ellekit.deb here to compare the package form"; return; }
     [ "$tf_got" = "$tf_pkg" ] || { echo content; return; }
+    # The mode is the package's to choose, but not anyone else's to change. An
+    # earlier comment here said it was dpkg's business and checked nothing,
+    # which accepted a mode-000 injector that no ordinary process can load,
+    # exactly as the provisioned form did before it was checked. The expectation
+    # is the one finalize.sh uses, out of ellekit.pin.
+    tf_want=$(tweak_pkg_mode "/var/jb${tweak_pkg#*=./var/jb}")
+    if [ -n "$tf_want" ] && [ "$tf_islink" = 0 ] && [ "$tf_mode" != "$tf_want" ]; then
+        echo "mode $tf_mode, the package ships $tf_want"
+        return
+    fi
     case "$tweak_pkg" in
         pkglink=*)
             [ "$tf_islink" = 1 ] \
