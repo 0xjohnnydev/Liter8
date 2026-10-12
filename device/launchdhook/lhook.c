@@ -359,11 +359,9 @@ static int make_child_env(char *const input[], int inject, struct child_env *out
         out->insert = NULL; free(libraries); return ENOMEM;
     }
     free(libraries);
-    /* Only where there is a loader to dlopen. The icon payload inserted above
-     * needs none of this, so on a device carrying it and no ElleKit the child
-     * gets the interposer and the icon hook with no rootless extensions at all.
-     * The strip below drops any inherited tokens in that case, rather than
-     * passing on a grant this spawn would not have minted. */
+    /* Only where there is a loader to dlopen. The icon payload needs none of
+     * this, and the strip below drops any inherited tokens rather than passing
+     * on a grant this spawn would not have minted. */
     if (inject && file_exists(kLoader)) {
         /* A sandboxed descendant may be unable to issue a new extension. The
          * inherited bearer remains valid for this boot and this directory. */
@@ -440,38 +438,37 @@ DYLD_INTERPOSE(my_posix_spawnp, posix_spawnp)
 
 /* This entry point is also used by the standalone sandbox regression test.
  * A failure leaves the host running without tweaks; it never aborts launch. */
+/* Consume one of the minted extensions. 0 if it was consumed or was never
+ * offered, -1 if it was offered and refused. */
+static int consume_grant(size_t g) {
+    char name[64];
+    size_t length = strlen(kGrants[g].key) - 1; /* without '=' */
+    if (length >= sizeof name) return 0;
+    memcpy(name, kGrants[g].key, length);
+    name[length] = '\0';
+    const char *token = getenv(name);
+    if (!token || !*token) return 0;
+    consume_fn consume = (consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+    if (consume && consume(token) >= 0) return 0;
+    os_log_error(OS_LOG_DEFAULT, "Liter8: sandbox grant %{public}s failed pid=%d",
+                 kGrants[g].cls, getpid());
+    return -1;
+}
+
 int liter8_load_tweaks(void) {
     if (getpid() == 1) return 0;
-    /* Decide before consuming anything. These extensions exist only so the
-     * loader and its tweaks can be dlopened out of /var/jb, so a process that
-     * is not going to do that has no business holding them. Consuming first
-     * meant every injected process on a device with no loader took read and
-     * file-map-executable on the whole rootless tree while only the icon hook
-     * was doing anything, and the same for a denied process or one spawned into
-     * a session that is no longer armed.
-     *
-     * The icon payload is unaffected: it lives on the System volume and takes
-     * its own token out of sbextissue's mailbox rather than from these
-     * variables, which is why it is inserted directly instead of loaded here. */
+    /* Read first: the checks below are themselves reads of /var/jb. Deciding
+     * before consuming it cost injection in every profile that denies the
+     * rootless tree until the extension lands; measured on 24B5099f,
+     * iconservicesagent logged "deny(1) file-read-data /var/jb/.lhook_enabled"
+     * and loaded nothing. The executable grant stays withheld until there is
+     * something to dlopen, which was the point of gating at all. */
+    if (consume_grant(0) != 0) return -1;
     if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
     if (!file_exists(kLoader)) return 0;
-    /* Read is required: without it nothing under /var/jb is visible. The
-     * executable grant only matters to processes whose profile checks
-     * file-map-executable, so its failure is logged and loading continues. */
-    consume_fn consume = (consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
-    for (size_t g = 0; g < GRANT_COUNT; g++) {
-        char name[64];
-        size_t length = strlen(kGrants[g].key) - 1; /* without '=' */
-        if (length >= sizeof name) continue;
-        memcpy(name, kGrants[g].key, length);
-        name[length] = '\0';
-        const char *token = getenv(name);
-        if (!token || !*token) continue;
-        if (consume && consume(token) >= 0) continue;
-        os_log_error(OS_LOG_DEFAULT, "Liter8: sandbox grant %{public}s failed pid=%d",
-                     kGrants[g].cls, getpid());
-        if (g == 0) return -1;
-    }
+    /* Only matters to profiles that check file-map-executable, so a refusal is
+     * logged and the load continues. */
+    (void)consume_grant(1);
     /* Loading the loader here, from the constructor, rather than inserting it.
      *
      * The fork this port comes from records the opposite, at its own lhook.c:97:
