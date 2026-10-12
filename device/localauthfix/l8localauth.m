@@ -152,7 +152,7 @@ static id l8_evaluateSync(id self, SEL sel, NSInteger policy,
                           NSDictionary *options, NSError **error) {
     if (!marker_enabled()) return gOriginalEvaluateSync(self, sel, policy, options, error);
     NSError *native = nil;
-    id result = gOriginalEvaluateSync(self, sel, policy, options, &native);
+    id result = gOriginalEvaluateSync(self, sel, policy, options, error ? &native : NULL);
     if (error) *error = result != nil ? native : translated(native);
     return result;
 }
@@ -160,7 +160,7 @@ static id l8_evaluateSync(id self, SEL sel, NSInteger policy,
 static BOOL l8_canEvaluate(id self, SEL sel, NSInteger policy, NSError **error) {
     if (!marker_enabled()) return gOriginalCanEvaluate(self, sel, policy, error);
     NSError *native = nil;
-    BOOL ok = gOriginalCanEvaluate(self, sel, policy, &native);
+    BOOL ok = gOriginalCanEvaluate(self, sel, policy, error ? &native : NULL);
     if (error) *error = ok ? native : translated(native);
     return ok;
 }
@@ -193,7 +193,8 @@ static id l8_accessSync(id self, SEL sel, CFTypeRef accessControl, NSInteger ope
         return gOriginalAccessSync(self, sel, accessControl, operation, options, error);
     }
     NSError *native = nil;
-    id result = gOriginalAccessSync(self, sel, accessControl, operation, options, &native);
+    id result = gOriginalAccessSync(self, sel, accessControl, operation, options,
+                                    error ? &native : NULL);
     if (error) *error = result != nil ? native : translated(native);
     return result;
 }

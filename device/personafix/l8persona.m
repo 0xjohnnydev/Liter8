@@ -173,6 +173,11 @@ static BOOL l8_resolve(id self, SEL sel, NSError **error) {
      * it had asked for an error. The kill switch is supposed to leave no trace;
      * the l8localauth wrappers do the same thing for the same reason.
      *
+     * Armed is not a licence to substitute either: `error ? &native : NULL`
+     * below keeps the caller's NULL on the paths that end up returning the
+     * stock result anyway, which is most of them. native is only wanted to copy
+     * back and to log, and neither applies when nobody asked for an error.
+     *
      * Only the marker moves ahead of the call. no_personal_persona() stays
      * after it: it asks MobileInstallation what it discovered, and reordering a
      * query around the call it describes is a change this has no measurement
@@ -181,7 +186,7 @@ static BOOL l8_resolve(id self, SEL sel, NSError **error) {
 
     NSString *named_before = string_property(self, "personaUniqueString");
     NSError *native = nil;
-    BOOL ok = gOriginalResolve(self, sel, &native);
+    BOOL ok = gOriginalResolve(self, sel, error ? &native : NULL);
     if (ok || !no_personal_persona()) {
         if (error) *error = native;
         return ok;
@@ -342,6 +347,14 @@ int main(void) {
         error = [NSError errorWithDomain:@"stale" code:1 userInfo:nil];
         if (![identity resolvePersonaWithError:&error] || error != nil) return 4;
         if (!identity.isResolved || ![identity.personaUniqueString isEqualToString:@"TestPrimaryPersona"]) return 5;
+
+        // Armed, but a personal persona exists so the call keeps its stock
+        // result: the caller's NULL still has to reach the original.
+        gPrimary = @"personal-uuid";
+        gSawNullErrorPointer = NO;
+        if ([identity resolvePersonaWithError:NULL]) return 18;
+        if (!gSawNullErrorPointer) return 19;
+        gPrimary = nil;
 
         // The second measured shape: the identity already names the persona the
         // first pass injected and the stock code rejects it. Refusing this one

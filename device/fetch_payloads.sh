@@ -140,9 +140,16 @@ die()  { printf '    [!] %s\n' "$1"; exit 1; }
 # part way leaves the bytes it got: measured 49 KB of the 331 KB ElleKit deb
 # against a 2s timeout. The next run reads that as a cache hit and dies on the
 # digest instead, with nothing in the message saying to delete it.
+# Deadlines, so a stall fails instead of hanging. The optional ElleKit download
+# is allowed to fail into a skip, but a server that accepts the connection and
+# then says nothing never reached that branch and held `fw provision` before
+# Dropbear was installed. A stall detector rather than --max-time: these range
+# from a 331 KB deb to a 53 MB one, so any total-time cap right for one is wrong
+# for the other, while "no progress for 30s" is the condition being caught.
 fetch_cached() {
     [ -f "$1" ] && return 0
-    curl -sL --fail -o "$1.part" "$2" && mv -f "$1.part" "$1" && return 0
+    curl -sL --fail --connect-timeout 20 --speed-time 30 --speed-limit 1024 \
+        -o "$1.part" "$2" && mv -f "$1.part" "$1" && return 0
     rm -f "$1.part"
     return 1
 }

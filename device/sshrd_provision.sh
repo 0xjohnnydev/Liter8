@@ -996,8 +996,18 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     ok "host payload verified: ad-hoc, both slices, no entitlements, filters lint"
 
     mkdir -p payload/.work
-    sh_dev 'mkdir -p /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit' >/dev/null \
-        || die "could not create the tweak directories"
+    # Real directories, not links to them. mkdir -p is happy with an existing
+    # symlink, and every upload and root readback then follows it: point
+    # TweakInject at /mnt1/usr/lib and the payloads land on the System volume
+    # while verification reads them back through the same link and says OK.
+    must_dev '
+for d in /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit; do
+    if [ -L "$d" ]; then echo "SYMLINK $d"; exit 1; fi
+    mkdir -p "$d" || exit 1
+    if [ -L "$d" ] || [ ! -d "$d" ]; then echo "NOT A DIRECTORY $d"; exit 1; fi
+done
+echo DONE_OK
+' "a tweak destination is a symlink or could not be created; refusing to write through it"
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with
     # no network and no dpkg: the injector, the safe-mode payload it names, and
