@@ -324,8 +324,16 @@ public struct CommCenterDataActivationResolver: Sendable {
             throw PatchfinderError.noCandidate("\(Self.name) context gate branch")
         }
 
-        guard let branchAddress = layout.virtualAddress(forFileOffset: branchOffset),
+        // The target has to be code, not merely mappable. encodeDirectBranch
+        // only needs both addresses to resolve, so a branch drifted to point
+        // into a data section would encode here and this would forward the gate
+        // into data. Same hole the vm_map_protect skip branch had; found by
+        // sweeping for it rather than by hitting it.
+        guard let code = layout.executableFileRanges.first(where: { $0.contains(branchOffset) }),
+              let branchAddress = layout.virtualAddress(forFileOffset: branchOffset),
               let target = ARM64.conditionalTarget(instruction: branch, at: branchAddress),
+              let targetOffset = layout.fileOffset(forVirtualAddress: target),
+              code.contains(targetOffset),
               let replacement = ARM64.encodeDirectBranch(
                   link: false,
                   instructionOffset: branchAddress,

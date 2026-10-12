@@ -13,6 +13,8 @@ __pycache__/
 tools/idevicerestore
 tools/.idevicerestore-commit
 tools/*.setup-new
+# Per-build workflow run directories.
+.run-*/
 
 # Local arm64/arm64e device-helper products. Provisioning rebuilds these from
 # the reviewed Objective-C sources before copying them to the phone.
@@ -41,5 +43,7 @@ device/fdrfix/l8radio
 device/launchdhook/lhookctl
 # Built by device/localauthfix/build.sh, reproduced from source each run.
 device/localauthfix/l8localauth.dylib
+# Built by device/personafix/build.sh, reproduced from source each run.
+device/personafix/l8persona.dylib
 # Host-built/downloaded device payloads; always reproduced by fetch_payloads.sh.
 device/payload/

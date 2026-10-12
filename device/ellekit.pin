@@ -1,0 +1,44 @@
+# The pinned ElleKit package, named once and read by both the fetcher and the
+# installer. fetch_payloads.sh verifies this digest on download; finalize.sh
+# verifies it again immediately before handing the file to dpkg, which runs its
+# maintainer scripts as root.
+#
+# The second check is worth having because the two steps are separate actions:
+# `fw finalize` does not rerun the fetch, and the payload it installs sits in a
+# mutable work directory in between. It catches a swapped build artifact. It
+# cannot defend against someone who can also edit these scripts, and does not
+# claim to.
+ELLEKIT_VER=1.2
+ELLEKIT_SHA=e21dc91bdc1be193dc915daecfff45256239b4fe583a36861e662ab1f43906dc
+
+# ElleKit is by Evelyne Belanger (https://ellekit.space) under a BSD 3-clause
+# licence, whose text is device/ELLEKIT-LICENSE: a verbatim copy of the one the
+# package ships, so fetch_payloads.sh can compare the two byte for byte and
+# refuse a download whose terms changed.
+#
+# Binary redistribution is permitted provided the notice and disclaimer travel
+# with it. finalize.sh installs the package unmodified, so that path carries the
+# notice itself. Provisioning installs two dylibs extracted from the package
+# without dpkg, so it installs this file beside them for the same reason.
+ELLEKIT_LICENSE=ELLEKIT-LICENSE
+
+# mode:path for every regular file the package owns, from the pinned archive:
+#   ar p ellekit_1.2_iphoneos-arm64.deb data.tar.xz | xz -dc | tar tvf -
+#
+# Here rather than read from the archive at check time, because `fw finalize`
+# does not fetch payloads: on a fresh work directory there is no deb, and a
+# check that sourced its expectations from one skipped every mode silently.
+# Measured on device: with the loader at mode 000 and no cached deb, finalize
+# reported complete. Keeping the expectation in the repo also means nothing
+# builds a device command out of a downloaded archive's member names.
+#
+# finalize.sh cross-checks this against the archive whenever one is present, so
+# bumping the pin cannot leave the table describing the old version.
+ELLEKIT_FILE_MODES="
+-rw-r--r--:/var/jb/usr/lib/ellekit/MobileSafety.dylib
+-rw-r--r--:/var/jb/usr/lib/ellekit/libinjector.dylib
+-rw-r--r--:/var/jb/usr/lib/ellekit/pspawn.dylib
+-rw-r--r--:/var/jb/usr/lib/libellekit.dylib
+-rwxr-xr-x:/var/jb/usr/libexec/ellekit/loader
+-rw-r--r--:/var/jb/usr/share/doc/ellekit/LICENSE
+"

@@ -129,6 +129,338 @@ else
     ok "shell profile installed and parsed"
 fi
 
+# ElleKit, installed as its own package on a booted device. This is what brings
+# the hooking library, the six substrate compatibility names and, most
+# importantly, the dpkg record: without a package declaring it, a tweak whose
+# control says Depends: mobilesubstrate cannot be configured, and PreferenceLoader
+# and most repo tweaks say exactly that.
+#
+# It is upstream's deb, unmodified and hash-pinned by fetch_payloads.sh, so
+# ElleKit stays ElleKit's in dpkg: its control, its maintainer, its version.
+#
+# It cannot happen during provisioning. dpkg needs a booted bootstrap, and the
+# compatibility names have to be symlinks, which the deb creates and the ramdisk
+# has no known ln for. Provisioning installs only the injector and the two
+# tweaks, which is enough for injection to work before this step ever runs.
+#
+# It overwrites the injector and safe-mode payload provisioning installed, with
+# upstream's own unsigned copies. Measured: those load and run perfectly well, so
+# the overwrite is harmless.
+say "ElleKit package"
+# Version and digest come from device/ellekit.pin, the same file fetch_payloads.sh
+# checked on download.
+. ./ellekit.pin
+EK_DEB=payload/tweaks/ellekit.deb
+
+# link:target, read out of the package itself rather than guessed:
+#   ar x ellekit.deb && xz -dc data.tar.xz | tar tvf -
+# lists all seven as symlinks with these targets. The pin carries a digest, so
+# a version that changed them could not be installed without bumping the pin.
+EK_LINKS=(
+    "/var/jb/usr/lib/TweakLoader.dylib:/var/jb/usr/lib/ellekit/libinjector.dylib"
+    "/var/jb/usr/lib/TweakInject.dylib:/var/jb/usr/lib/ellekit/libinjector.dylib"
+    "/var/jb/usr/lib/libsubstrate.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/usr/lib/libhooker.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/usr/lib/libblackjack.dylib:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate:/var/jb/usr/lib/libellekit.dylib"
+    "/var/jb/Library/MobileSubstrate/DynamicLibraries:/var/jb/usr/lib/TweakInject"
+)
+
+# What has to be true after this step whether or not it installed anything.
+# A finalize interrupted between dpkg registering the package and this running
+# leaves the competing boot script in place and the links unchecked, and the
+# retry must not accept that state just because dpkg says "installed".
+#
+# Resolution alone is not the check. `[ -e ]` passed for a link repointed at any
+# other existing file: aim TweakLoader.dylib at MobileSafety.dylib and the old
+# check reported ElleKit complete while lhook dlopens the wrong image and no
+# TweakInject payload loads at all. The target is compared, and a symlink is
+# required, so a regular file left where the package wants a link is caught too.
+#
+# readlink is read once and cached: an absent tool prints nothing, which would
+# read as "every target is wrong" instead of "this was not checked".
+EK_READLINK=""
+# Read once and cached. Its own function because ek_readlink_complaint needs the
+# same answer, and because this must not print to ek_broken_links' stdout: that
+# stdout IS the broken-link list and the callers word-split it, so a warning
+# emitted there became fake broken links.
+ek_probe_readlink() {
+    [[ -n "$EK_READLINK" ]] && return 0
+    EK_READLINK=$(sh_dev "$RPATH; command -v readlink >/dev/null && echo yes || echo no" | tr -d '\r')
+}
+
+ek_broken_links() {
+    local bad=() spec link want got
+    ek_probe_readlink
+    for spec in $EK_LINKS; do
+        link=${spec%%:*}
+        want=${spec#*:}
+        if [[ "$EK_READLINK" != yes ]]; then
+            sh_dev "$RPATH; [ -e '$link' ]" >/dev/null 2>&1 || bad+=("$link")
+            continue
+        fi
+        got=$(sh_dev "$RPATH; [ -L '$link' ] && [ -e '$link' ] && readlink '$link'" | tr -d '\r')
+        [[ "$got" == "$want" ]] || bad+=("$link")
+    done
+    print -r -- "${bad[@]}"
+}
+EK_BOOT_SCRIPT=/var/jb/etc/rc.d/ellekit-loader
+EK_BOOT_DIVERSION="$EK_BOOT_SCRIPT.liter8-disabled"
+
+ek_boot_script_present() {
+    sh_dev "$RPATH; [ -e '$EK_BOOT_SCRIPT' ]" >/dev/null 2>&1
+}
+
+# Divert the package's boot script instead of deleting it.
+#
+# Deleting it was a one-time act, so any later `dpkg -i`, apt reinstall or
+# upgrade put it straight back: measured on device, a reinstall of the pinned
+# deb recreates ellekit-loader as a symlink to usr/libexec/ellekit/loader. A
+# local diversion survives that, because dpkg writes the package's copy to the
+# diverted name and leaves rc.d alone. Confirmed on device: with the diversion
+# added, the same reinstall left rc.d holding only the diverted name.
+#
+# The reason is not that the script would otherwise run. Nothing on this
+# bootstrap executes /var/jb/etc/rc.d: there is no runner in jbboot.sh, no
+# ElleKit launchd job, and the postinst invokes the loader directly at install
+# time, which is the assertion failure dpkg prints and carries on from. An
+# earlier comment here claimed it runs at every boot, which is wrong. What the
+# diversion buys is that the removal stays done across package operations, that
+# `dpkg -V` becomes a clean signal rather than permanently reporting one missing
+# file, and that this is still correct if a future bootstrap does add a runner.
+ek_divert_boot_script() {
+    if sh_dev "$RPATH; dpkg-divert --list '$EK_BOOT_SCRIPT'" 2>/dev/null \
+        | grep -q "$EK_BOOT_DIVERSION"; then
+        return 0
+    fi
+    sh_dev "$RPATH; command -v dpkg-divert >/dev/null" >/dev/null 2>&1 || {
+        # No dpkg-divert: fall back to the old removal rather than leaving the
+        # competing script in place, and say that it will not stay removed.
+        sh_dev "$RPATH; rm -f '$EK_BOOT_SCRIPT'" >/dev/null
+        printf '    [!] no dpkg-divert on the device; removed the boot script without a diversion\n'
+        printf '    [!] a package reinstall will put it back\n'
+        return 0
+    }
+    sh_dev "$RPATH; dpkg-divert --divert '$EK_BOOT_DIVERSION' --rename --add '$EK_BOOT_SCRIPT'" \
+        >/dev/null 2>&1 \
+        || die "could not divert $EK_BOOT_SCRIPT"
+    # --rename moves an existing file; nothing to move is equally fine, but the
+    # path itself must be clear either way before this is called a success.
+    sh_dev "$RPATH; rm -f '$EK_BOOT_SCRIPT'" >/dev/null
+    ek_boot_script_present && die "$EK_BOOT_SCRIPT is still present after diverting it"
+    return 0
+}
+
+# What `dpkg -V` says about the package's own files, one line per complaint.
+#
+# The link checks above verify where each name points, not what is at the other
+# end, so a truncated or replaced libinjector.dylib passed every one of them
+# while TweakLoader.dylib resolved to an unloadable image. This asks dpkg to
+# compare its recorded md5sums instead, which covers every file the package
+# owns rather than the handful this script would otherwise pick.
+#
+# Judged by output, not exit status: measured on device, `dpkg -V` exits 0 even
+# while reporting a missing file. A device diverted by this script is expected
+# to be silent; one finalized before the diversion existed reports exactly the
+# boot script as missing, which is that older intended state and not damage.
+# `|| true` because no complaints is the good case and the last grep exits 1 on
+# empty output, which under `set -e` aborted finalize at the assignment without
+# printing anything at all.
+ek_package_complaints() {
+    sh_dev "$RPATH; dpkg -V ellekit 2>&1" | tr -d '\r' \
+        | grep -v "^missing[[:space:]]*$EK_BOOT_SCRIPT\$" \
+        | grep -v '^[[:space:]]*$' || true
+    ek_mode_complaints
+    ek_mode_table_drift
+    ek_readlink_complaint
+    ek_dir_complaints
+}
+
+# The directories the files live in, which neither dpkg -V nor the mode table
+# looks at. Measured on device with every content, link and mode check passing:
+# /var/jb/usr/lib/TweakInject at mode 0777, from a third-party tweak's package
+# shipping Library/MobileSubstrate/DynamicLibraries (a symlink to it here) as a
+# directory entry. lhook loads what is there into root processes.
+ek_dir_complaints() {
+    sh_dev "$RPATH"'
+for d in /var/jb/usr/lib /var/jb/usr/lib/TweakInject /var/jb/usr/lib/ellekit /var/jb/usr/share/doc/ellekit; do
+    # -L first: -d follows the link, so a redirected TweakInject would pass.
+    if [ -L "$d" ]; then echo "unsafe directory $d is a symlink"; continue; fi
+    [ -d "$d" ] || { echo "unsafe directory $d is absent"; continue; }
+    set -- $(ls -ldn "$d")
+    case "${1%[.+]}" in
+        ?????w*)    echo "unsafe directory $d is group writable ($1)" ;;
+        ????????w*) echo "unsafe directory $d is other writable ($1)" ;;
+    esac
+    [ "$3" = 0 ] || echo "unsafe directory $d is owned by uid $3"
+done' < /dev/null | tr -d '\r'
+}
+
+# Modes and owners of the package's regular files, which dpkg -V does not look
+# at: its only functional check is the stored MD5 digest, so `chmod 000` on
+# ellekit/libinjector.dylib left every content and link check passing while no
+# non-root process could load the injector. Measured on device before this
+# existed: finalize --check reported complete and exited 0.
+#
+# The expected modes come out of the pinned archive rather than a list written
+# here, so they cannot drift from the package. Regular files only: dpkg owns
+# the symlinks' targets and ek_broken_links already covers the links.
+# Expectations come from ellekit.pin, not from the archive in payload/.
+#
+# Reading them from the deb meant no deb, no checks: `fw finalize` does not
+# fetch payloads, so on a fresh work directory the whole function returned
+# early and said nothing was wrong. Measured on device: the loader at mode 000
+# with no cached deb was reported complete, which is the common case rather
+# than an edge one. It also meant device commands were built out of member
+# names taken from a downloaded archive.
+#
+# Not `path` for the loop variable: in zsh that name is tied to $PATH, so
+# declaring it local emptied PATH inside the function and ar and xz stopped
+# resolving.
+ek_mode_complaints() {
+    local entry want member got
+    for entry in ${(f)ELLEKIT_FILE_MODES}; do
+        [[ -n "$entry" ]] || continue
+        want=${entry%%:*}
+        member=${entry#*:}
+        got=$(sh_dev "$RPATH; ls -ln ${(q)member} 2>/dev/null" < /dev/null | tr -d '\r')
+        [[ -n "$got" ]] || { print -r -- "absent $member"; continue; }
+        [[ "${${got%% *}%[.+]}" == "$want" && "${${(z)got}[3]}" == 0 ]] \
+            || print -r -- "mode/owner $member is ${${(z)got}[1]} uid ${${(z)got}[3]}, expected $want uid 0"
+    done
+}
+
+# Whenever the archive is here, the table has to agree with it, so bumping the
+# pin cannot leave the table describing the version before it.
+ek_mode_table_drift() {
+    [[ -f "$EK_DEB" ]] || return 0
+    local from_archive from_pin
+    from_archive=$(tar tvf <(xz -dc < <(ar p "$EK_DEB" data.tar.xz)) 2>/dev/null \
+        | sed -n 's|^\(-[rwxsStT-]*\) .* \./\(.*\)$|\1:/\2|p' | sort)
+    from_pin=$(print -rl -- ${(f)ELLEKIT_FILE_MODES} | grep -v '^[[:space:]]*$' | sort)
+    [[ "$from_archive" == "$from_pin" ]] \
+        || print -r -- "ellekit.pin's ELLEKIT_FILE_MODES does not match $EK_DEB"
+}
+
+# An unverifiable link is not a verified one. Without readlink the fallback can
+# only ask whether each name resolves, which accepts a loader repointed at any
+# other existing file, so the absence of the verifier is itself a reason to
+# call finalization incomplete rather than a warning to print and carry on.
+ek_readlink_complaint() {
+    ek_probe_readlink
+    [[ "$EK_READLINK" == yes ]] \
+        || print -r -- "link targets unverified: no readlink on the device PATH"
+}
+
+# Ask for the status, not the version. A removed package keeps its version in
+# dpkg's database while its state is "deinstall ok config-files" and every one
+# of its files is gone, so a non-empty version means "dpkg has heard of it",
+# not "it is installed".
+EK_STATE=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
+EK_INSTALLED=0
+[[ "$EK_STATE" == *"install ok installed"* ]] && EK_INSTALLED=1
+
+if (( EK_INSTALLED )) && [[ "${EK_STATE%% *}" != "$ELLEKIT_VER" ]]; then
+    skip "ellekit ${EK_STATE%% *} is installed, but this tree pins $ELLEKIT_VER"
+    FINALIZE_INCOMPLETE=1
+elif (( EK_INSTALLED )); then
+    EK_BAD=(${=$(ek_broken_links)})
+    EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+    EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+    if ek_boot_script_present || (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
+        if (( CHECK_ONLY )); then
+            printf '    [=] ellekit %s installed but incomplete: %s\n' "$ELLEKIT_VER" \
+                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+${EK_COMPLAINTS[*]}}"
+            FINALIZE_INCOMPLETE=1
+        else
+            ek_divert_boot_script
+            EK_BAD=(${=$(ek_broken_links)})
+            EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+            EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+            if (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
+                # The links and the files behind them are the package's own, so
+                # this step cannot repair them without guessing. Say what is
+                # wrong and let the rest of finalize run: nothing after this
+                # depends on them.
+                (( ${#EK_BAD} )) && printf '    [!] ellekit is installed but these do not resolve: %s\n' \
+                    "${${(@)EK_BAD:t}[*]}"
+                (( ${#EK_COMPLAINTS} )) && printf '    [!] the installed package is not as expected: %s\n' \
+                    "${EK_COMPLAINTS[*]}"
+                printf '    [!] reinstall it: dpkg -i /var/root/ellekit.deb on the device\n'
+                FINALIZE_INCOMPLETE=1
+            else
+                ok "ellekit $ELLEKIT_VER already installed; boot script diverted, links and package files checked"
+            fi
+        fi
+    else
+        skip "ellekit $ELLEKIT_VER already installed and complete"
+    fi
+elif [[ ! -f "$EK_DEB" ]]; then
+    # An absent archive is two different states, and treating both as incomplete
+    # made the optional ElleKit download mandatory one stage after provisioning
+    # stopped requiring it: with only ellekit.space blocked, fetch and provision
+    # both skip the tweak set by design, and `fw finalize` then still exited
+    # nonzero with every required bootstrap and boot-job check passing.
+    #
+    # The loader on the device is what separates them. Present means
+    # provisioning installed the tweak stack and the package is still owed:
+    # without its dpkg record a tweak declaring Depends: mobilesubstrate cannot
+    # be configured. Absent means there is no tweak stack to finish.
+    if sh_dev "$RPATH; [ -e /var/jb/usr/lib/TweakLoader.dylib ]" >/dev/null 2>&1; then
+        skip "the loader is installed but $EK_DEB is absent; run ./fetch_payloads.sh tweaks"
+        skip "until then a tweak needing Depends: mobilesubstrate cannot configure"
+        FINALIZE_INCOMPLETE=1
+    else
+        skip "no tweak stack provisioned and no $EK_DEB; tweak support is off, not unfinished"
+    fi
+elif (( CHECK_ONLY )); then
+    skip "ellekit is not installed; this step would install $EK_DEB"
+    FINALIZE_INCOMPLETE=1
+else
+    # Re-verify the pinned digest here, not only at fetch time. finalize is a
+    # separate action that does not rerun the fetch, and this file has sat in a
+    # mutable work directory since. dpkg runs maintainer scripts as root, so the
+    # thing being handed to it gets checked immediately before the handover.
+    EK_GOT_SHA=$(shasum -a 256 "$EK_DEB" | awk '{print $1}')
+    [[ "$EK_GOT_SHA" == "$ELLEKIT_SHA" ]] \
+        || die "$EK_DEB does not match the pinned digest; refusing to install. got $EK_GOT_SHA"
+    # Unlinked first, for the reason the tweak staging paths are: tee follows a
+    # symlink already sitting there and would overwrite its target as root, and
+    # the readback below follows the same link so the digest check would agree.
+    sh_dev "$RPATH; rm -f /var/root/ellekit.deb" >/dev/null \
+        || die "could not clear the staging path on the device"
+    sh_dev "$RPATH; tee /var/root/ellekit.deb >/dev/null" < "$EK_DEB" \
+        || die "could not copy $EK_DEB to the device"
+    # Hash the readback here, not on the device: shasum is not part of the
+    # on-device tool set, and a missing tool returns empty rather than failing.
+    EK_LANDED=$(sh_dev "$RPATH; cat /var/root/ellekit.deb" | shasum -a 256 | awk '{print $1}')
+    [[ "$EK_LANDED" == "$ELLEKIT_SHA" ]] \
+        || die "the copy on the device does not match the pinned digest: ${EK_LANDED:-nothing}"
+    # Its postinst runs ElleKit's own loader, which asserts and dies here
+    # because lhook already owns launchd. dpkg carries on and the install is
+    # fine, so the exit status is not the thing to judge this by: ask dpkg.
+    sh_dev "$RPATH; dpkg -i /var/root/ellekit.deb 2>&1 | tail -4" | sed 's/^/        /'
+    EK_STATE=$(sh_dev "$RPATH; dpkg-query -W -f='\${Version} \${Status}' ellekit 2>/dev/null" | tr -d '\r')
+    [[ "$EK_STATE" == *"install ok installed"* ]] \
+        || die "ellekit did not register with dpkg: ${EK_STATE:-nothing}"
+    [[ "${EK_STATE%% *}" == "$ELLEKIT_VER" ]] \
+        || die "dpkg registered ellekit ${EK_STATE%% *}, expected $ELLEKIT_VER"
+    # The package's own loader has no business competing with lhook, so its
+    # boot script is diverted rather than deleted. See ek_divert_boot_script for
+    # what that does and, more to the point, what it does not: nothing on this
+    # bootstrap runs rc.d, so this is about the removal staying done across
+    # package operations rather than about stopping a boot-time loader.
+    ek_divert_boot_script
+    EK_BAD=(${=$(ek_broken_links)})
+    (( ${#EK_BAD} == 0 )) \
+        || die "these do not resolve after installing ellekit: ${${(@)EK_BAD:t}[*]}"
+    EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
+    EK_COMPLAINTS=(${EK_COMPLAINTS:#})
+    (( ${#EK_COMPLAINTS} == 0 )) \
+        || die "what was just installed is not as expected: ${EK_COMPLAINTS[*]}"
+    ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
+fi
+
 say "one-time System application registration"
 if sh_dev "$RPATH; [ -f '$REGISTRATION_MARKER' ]" >/dev/null 2>&1; then
     skip "already completed"
