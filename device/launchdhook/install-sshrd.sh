@@ -40,6 +40,26 @@ case "$HOOK_PATH" in
         exit 1 ;;
 esac
 
+# The load command says this device was hooked by this workflow at some point,
+# not that it was hooked from this tree. What this script writes is not
+# build-specific (lhook.dylib and lhookctl carry no profile input), so writing
+# them onto another build's launchd is not itself dangerous. It does reliably
+# mean the wrong tree is open for this device, though, and this is the one
+# script that writes into PID 1's load path without the profile and hash gates
+# the full provisioner applies. So it compares what it can and stops.
+#
+# Only when the comparison is possible: a tree that has not built its launchd
+# payload yet has nothing to compare, and that is not a reason to refuse a hook
+# update.
+if [ -f ../payload/launchd.hooked ] \
+    && ! cmp -s ../payload/launchd.hooked "$CHECK_DIR/launchd.ondevice"; then
+    echo "This device's /sbin/launchd is not the image this tree built." >&2
+    echo 'The hook and controller are not build-specific, so this would still' >&2
+    echo 'load, but it almost always means the wrong tree is open for this' >&2
+    echo 'device. Run the full provisioner, which checks the firmware profile.' >&2
+    exit 1
+fi
+
 "$SSH" '
 if [ -f /mnt1/usr/lib/lhook ] && [ ! -e /mnt1/usr/lib/lhook.before-session-guard ]; then
     cp /mnt1/usr/lib/lhook /mnt1/usr/lib/lhook.before-session-guard || exit 1
