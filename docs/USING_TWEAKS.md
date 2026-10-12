@@ -17,8 +17,13 @@ is almost certainly doing function hooking.
 Two of the shipped tweaks sit dormant until their marker exists:
 
 ```sh
+# passcode prompts
 ssh -p 2222 root@localhost \
   'touch /var/jb/.liter8-localauth && chmod 644 /var/jb/.liter8-localauth'
+
+# app installs
+ssh -p 2222 root@localhost \
+  'touch /var/jb/.liter8-persona && chmod 644 /var/jb/.liter8-persona'
 ```
 
 - `.liter8-localauth` translates the SEP-less ACM `-3` failure into "passcode not

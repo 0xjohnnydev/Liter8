@@ -273,6 +273,27 @@ ek_package_complaints() {
     ek_mode_complaints
     ek_mode_table_drift
     ek_readlink_complaint
+    ek_dir_complaints
+}
+
+# The directories the files live in, which neither dpkg -V nor the mode table
+# looks at. Measured on device with every content, link and mode check passing:
+# /var/jb/usr/lib/TweakInject at mode 0777, from a third-party tweak's package
+# shipping Library/MobileSubstrate/DynamicLibraries (a symlink to it here) as a
+# directory entry. lhook loads what is there into root processes.
+ek_dir_complaints() {
+    sh_dev "$RPATH"'
+for d in /var/jb/usr/lib /var/jb/usr/lib/TweakInject /var/jb/usr/lib/ellekit /var/jb/usr/share/doc/ellekit; do
+    # -L first: -d follows the link, so a redirected TweakInject would pass.
+    if [ -L "$d" ]; then echo "unsafe directory $d is a symlink"; continue; fi
+    [ -d "$d" ] || { echo "unsafe directory $d is absent"; continue; }
+    set -- $(ls -ldn "$d")
+    case "${1%[.+]}" in
+        ?????w*)    echo "unsafe directory $d is group writable ($1)" ;;
+        ????????w*) echo "unsafe directory $d is other writable ($1)" ;;
+    esac
+    [ "$3" = 0 ] || echo "unsafe directory $d is owned by uid $3"
+done' < /dev/null | tr -d '\r'
 }
 
 # Modes and owners of the package's regular files, which dpkg -V does not look
@@ -349,7 +370,7 @@ elif (( EK_INSTALLED )); then
     if ek_boot_script_present || (( ${#EK_BAD} )) || (( ${#EK_COMPLAINTS} )); then
         if (( CHECK_ONLY )); then
             printf '    [=] ellekit %s installed but incomplete: %s\n' "$ELLEKIT_VER" \
-                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+package files: ${EK_COMPLAINTS[*]}}"
+                "$(ek_boot_script_present && print -n 'boot script present; ')${EK_BAD:+broken links: ${${(@)EK_BAD:t}[*]}; }${EK_COMPLAINTS:+${EK_COMPLAINTS[*]}}"
             FINALIZE_INCOMPLETE=1
         else
             ek_divert_boot_script
@@ -363,7 +384,7 @@ elif (( EK_INSTALLED )); then
                 # depends on them.
                 (( ${#EK_BAD} )) && printf '    [!] ellekit is installed but these do not resolve: %s\n' \
                     "${${(@)EK_BAD:t}[*]}"
-                (( ${#EK_COMPLAINTS} )) && printf '    [!] the package files disagree with the pinned archive: %s\n' \
+                (( ${#EK_COMPLAINTS} )) && printf '    [!] the installed package is not as expected: %s\n' \
                     "${EK_COMPLAINTS[*]}"
                 printf '    [!] reinstall it: dpkg -i /var/root/ellekit.deb on the device\n'
                 FINALIZE_INCOMPLETE=1
@@ -436,7 +457,7 @@ else
     EK_COMPLAINTS=(${(f)"$(ek_package_complaints)"})
     EK_COMPLAINTS=(${EK_COMPLAINTS:#})
     (( ${#EK_COMPLAINTS} == 0 )) \
-        || die "the files just installed disagree with the pinned archive: ${EK_COMPLAINTS[*]}"
+        || die "what was just installed is not as expected: ${EK_COMPLAINTS[*]}"
     ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 

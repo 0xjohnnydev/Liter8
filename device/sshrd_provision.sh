@@ -930,9 +930,48 @@ tweak_pkg_hash() {
 #
 # Read from the device, not assumed: this is the post-finalize form the package
 # ships, and the transition itself has not been watched on hardware yet.
+#
+# ssh's status is checked before the answer is matched. This ended in a pipe
+# into tr, which exits 0 whatever sh_dev did, so an exhausted retry returned an
+# empty string: not `finalized`, so the install loop below took the provisioned
+# branch and overwrote the files dpkg owns.
 tweak_stage() {
-    sh_dev '[ -L /mnt2/jb/usr/lib/TweakLoader.dylib ] && echo finalized || echo provisioned' \
-        | tr -d '\r'
+    ts_out=$(sh_dev '[ -L /mnt2/jb/usr/lib/TweakLoader.dylib ] && echo finalized || echo provisioned') \
+        || { echo unreadable; return; }
+    # Matched as substrings so a trailing carriage return needs no stripping.
+    case "$ts_out" in
+        *finalized*)   echo finalized ;;
+        *provisioned*) echo provisioned ;;
+        *)             echo unreadable ;;
+    esac
+}
+
+# Why the three tweak destinations are unacceptable, or nothing. lhook loads
+# whatever ends up under them into root processes, so a symlink or a directory
+# another account can write replaces a verified tweak.
+#
+# Shared with the verify step, which is the finding: this ran only on the
+# install path, so `--check` called a symlinked or mode-0777 TweakInject clean.
+# Absent is not a fault here; the per-entry content checks report that.
+tweak_dir_faults() {
+    td_out=$(sh_dev '
+for d in /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit; do
+    if [ -L "$d" ]; then echo "symlink $d"; continue; fi
+    [ -e "$d" ] || continue
+    if [ ! -d "$d" ]; then echo "not a directory $d"; continue; fi
+    set -- $(ls -ldn "$d")
+    case "$1" in
+        ?????w*)    echo "group writable $d" ;;
+        ????????w*) echo "other writable $d" ;;
+    esac
+    [ "$3" = 0 ] || echo "owner uid $3 $d"
+done
+echo CHECKED_OK') || { echo "could not read the tweak destinations"; return; }
+    case "$td_out" in
+        *CHECKED_OK*) ;;
+        *) echo "could not read the tweak destinations"; return ;;
+    esac
+    printf '%s\n' "$td_out" | tr -d '\r' | grep -v CHECKED_OK || true
 }
 
 # Same policy the injection step applies to .lhook_enabled: a provision leaves
@@ -1000,25 +1039,21 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     # symlink, and every upload and root readback then follows it: point
     # TweakInject at /mnt1/usr/lib and the payloads land on the System volume
     # while verification reads them back through the same link and says OK.
-    # Root-owned real directories, not links and not writable by anyone else.
-    # mkdir -p is happy with an existing symlink and preserves the permissions
-    # of an existing directory, and lhook loads whatever ends up at these paths
-    # into root processes: a mode-0777 TweakInject lets another account replace a
-    # verified tweak, or plant a symlink for the staging write below to follow.
+    # Create, then judge with the same function verify uses. The link test is
+    # before mkdir -p, which is happy with an existing symlink; the fault check
+    # is after it, because mkdir keeps an existing directory's permissions.
     must_dev '
 for d in /mnt2/jb/usr/lib/ellekit /mnt2/jb/usr/lib/TweakInject /mnt2/jb/usr/share/doc/ellekit; do
     if [ -L "$d" ]; then echo "SYMLINK $d"; exit 1; fi
     mkdir -p "$d" || exit 1
-    if [ -L "$d" ] || [ ! -d "$d" ]; then echo "NOT A DIRECTORY $d"; exit 1; fi
-    set -- $(ls -ldn "$d")
-    case "$1" in
-        ?????w*)    echo "GROUP WRITABLE $d"; exit 1 ;;
-        ????????w*) echo "OTHER WRITABLE $d"; exit 1 ;;
-    esac
-    [ "$3" = 0 ] || { echo "OWNER uid $3 $d"; exit 1; }
 done
 echo DONE_OK
-' "a tweak destination is a symlink, writable by another account, or not root owned"
+' "could not create a tweak destination directory"
+    tweak_dirs=$(tweak_dir_faults)
+    [ -z "$tweak_dirs" ] || {
+        printf '%s\n' "$tweak_dirs" | sed 's/^/        /'
+        die "a tweak destination is unsafe or could not be read"
+    }
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with
     # no network and no dpkg: the injector, the safe-mode payload it names, and
@@ -1035,7 +1070,14 @@ echo DONE_OK
     # the symlink the package wants at TweakLoader.dylib back into a regular
     # file, and the next finalize sees ellekit registered so it never restores
     # either. The four TweakInject payloads are ours and always install.
+    # Checked here rather than inside tweak_stage, where a die would only end
+    # the command substitution's subshell. The layout decides whether four paths
+    # are left to dpkg or overwritten, so a failed read stops the step.
     TWEAK_AT=$(tweak_stage)
+    case "$TWEAK_AT" in
+        finalized|provisioned) ;;
+        *) die "could not read the tweak layout from the device" ;;
+    esac
     [ "$TWEAK_AT" = finalized ] \
         && skip "ellekit's deb is installed; the files it owns are left to dpkg"
     # Before the first write, not after the last. Any failure in the loop below
@@ -1331,7 +1373,7 @@ FAIL=0
 note() {
     printf '    %-24s %s\n' "$1" "${2:-NO RESULT}"
     case "$2" in
-        ""|*ABSENT*|*MISSING*|*LOST*|*MISMATCH*|*UNREADABLE*|ENABLED) FAIL=1 ;;
+        ""|*ABSENT*|*MISSING*|*LOST*|*MISMATCH*|*UNREADABLE*|*UNSAFE*|ENABLED) FAIL=1 ;;
     esac
 }
 
@@ -1781,6 +1823,15 @@ else
     done
 fi
 note "tweak loader set" "$tweak_state"
+
+# The directories, not just their contents: a verified tweak in a directory
+# another account can write is one rename away from being replaced.
+tweak_dirs=$(tweak_dir_faults)
+if [ -n "$tweak_dirs" ]; then
+    note "tweak destinations" "UNSAFE $(printf '%s' "$tweak_dirs" | tr '\n' ',')"
+else
+    note "tweak destinations" "no symlink, nothing writable by another account"
+fi
 # ENABLED is a failure for these two but not for .lhook_enabled above, and the
 # difference is real rather than an oversight. The injection marker is session
 # bound: it carries a boot-session UUID the guard compares, so a leftover one is
