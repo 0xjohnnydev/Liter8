@@ -8,6 +8,9 @@ struct ResolverOptions {
     var panelID: UInt32?
     var json = false
     var recordsOutput: URL?
+    /// Keep the shipped IM4P compression when re-encoding. Selected by the
+    /// workflow profile's boot plan; see FirmwareArtifact.encoded.
+    var preserveCompression = false
 
     /// Most resolvers take neither `--boot-args` nor `--pinot-id`. Rejecting them
     /// by name beats the old behaviour of reprinting the whole global usage block,
@@ -38,14 +41,20 @@ let resolverGroups: [String: [String: String]] = [
     ],
     "kernel": [
         "restore": KernelRestoreResolver.name,
+        "ppl-trust-cache": KernelPPLTrustCacheResolver.name,
         "boot-policy": KernelBootPolicyResolver.name,
         "aks": KernelAKSResolver.name,
         "sep-silence": KernelSEPSilenceResolver.name,
         "sep": KernelSEPResolver.name,
         "credential-manager": KernelCredentialManagerResolver.name,
         "sandbox": KernelSandboxResolver.name,
+        "sandbox-public": KernelSandboxCompatibilityResolver.name,
+        "ppl-allow-invalid": KernelPPLAllowInvalidResolver.name,
+        "vm-fault-cs-bypass": KernelVMFaultCSBypassResolver.name,
+        "vm-map-protect": KernelVMMapProtectResolver.name,
         "valeria": KernelValeriaResolver.name,
         "boot": KernelBootResolver.name,
+        "boot-jit": KernelBootJITResolver.name,
         // Keep the public CLI spelling stable while the Swift type describes
         // the plan's real cross-build compatibility contract.
         "boot-public": KernelBootCompatibilityResolver.name,
@@ -193,6 +202,9 @@ func resolveRecords(
     case KernelRestoreResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelRestoreResolver().resolve(in: image)
+    case KernelPPLTrustCacheResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelPPLTrustCacheResolver().resolve(in: image)
     case KernelBootPolicyResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootPolicyResolver().resolve(in: image)
@@ -211,6 +223,18 @@ func resolveRecords(
     case KernelSandboxResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelSandboxResolver().resolve(in: image)
+    case KernelSandboxCompatibilityResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelSandboxCompatibilityResolver().resolve(in: image)
+    case KernelPPLAllowInvalidResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelPPLAllowInvalidResolver().resolve(in: image)
+    case KernelVMFaultCSBypassResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelVMFaultCSBypassResolver().resolve(in: image)
+    case KernelVMMapProtectResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelVMMapProtectResolver().resolve(in: image)
     case KernelValeriaResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelValeriaResolver().resolve(in: image)
@@ -220,6 +244,9 @@ func resolveRecords(
     case KernelBootCompatibilityResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootCompatibilityResolver().resolve(in: image)
+    case KernelBootJITResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelBootJITResolver().resolve(in: image)
     case KernelDiagnosticResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelDiagnosticResolver().resolve(in: image)

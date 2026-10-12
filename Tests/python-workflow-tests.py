@@ -3,6 +3,7 @@
 
 import copy
 import json
+import re
 import hashlib
 import io
 import os
@@ -23,11 +24,20 @@ sys.path.insert(0, str(SCRIPTS))
 from liter8_workflow import Context, WorkflowError, run  # noqa: E402
 import measure_guards  # noqa: E402
 from boot_artifacts import (  # noqa: E402
+    PASSTHROUGH_IMG4,
+    has_txm,
     publish_directory,
     ticket_from_environment,
     write_boot_manifest,
 )
-from device_boot import FIRMWARE_SEQUENCE, boot as boot_device, validate_boot_set  # noqa: E402
+# What the j171aap profile will declare: A12/PPL, no SPTM and so no PMP or WCH.
+J171AAP_OPTIONAL = frozenset({"Ap,SecurePageTableMonitor", "PMP", "WCHFirmwareUpdater"})
+
+from device_boot import (  # noqa: E402
+    boot as boot_device,
+    selected_firmware_sequence,
+    validate_boot_set,
+)
 from device_provision import (  # noqa: E402
     BOOTSTRAP_SHA256,
     SSHRD_PAYLOAD_SHA256,
@@ -56,6 +66,7 @@ from userland_fixups import (  # noqa: E402
     signing_identifier,
 )
 from patch_setup import discover_targets  # noqa: E402
+from apfs_role import volume_for_role  # noqa: E402
 from patch_watchdogd_job import (  # noqa: E402
     CACHE_KEY as WATCHDOGD_CACHE_KEY,
     EXPECTED_MACH_SERVICES,
@@ -75,6 +86,42 @@ from add_ddi_services import (  # noqa: E402
     remove_job as remove_ddi_job,
     validate_document as validate_ddi_document,
 )
+
+
+def default_step_set(source: str, pattern: str) -> set[str]:
+    """Return the components a shell script runs when given no arguments.
+
+    These sets used to be asserted as a pinned substring of the assignment, so
+    inserting any unrelated step in the middle failed a test about a different
+    component entirely. Membership is what the tests actually mean.
+    """
+    match = re.search(pattern, source, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"no default step assignment matching {pattern}")
+    return set(match.group(1).split())
+
+
+class APFSRoleTests(unittest.TestCase):
+    def test_preboot_is_selected_by_role_instead_of_partition_number(self):
+        registry = '''+-o Preboot@5 <class AppleAPFSVolume, id 1>
+          "Role" = ("Preboot")
+          "BSD Name" = "disk1s5"
+        +-o Update@6 <class AppleAPFSVolume, id 2>
+          "Role" = ("Update")
+          "BSD Name" = "disk1s6"
+        '''
+        self.assertEqual(volume_for_role(registry, "Preboot"), "/dev/disk1s5")
+        colored = registry.replace('"Role"', '\x1b[0;31m"Role"')
+        self.assertEqual(volume_for_role(colored, "Preboot"), "/dev/disk1s5")
+
+    def test_missing_ambiguous_or_unsafe_role_is_rejected(self):
+        volume = '''+-o Preboot@5 <class AppleAPFSVolume, id 1>
+          "Role" = ("Preboot")
+          "BSD Name" = "disk1s5"
+        '''
+        for registry in ("", volume + volume, volume.replace("disk1s5", "disk1s5;reboot")):
+            with self.assertRaises(ValueError):
+                volume_for_role(registry, "Preboot")
 
 
 class DeveloperDiskImageJobTests(unittest.TestCase):
@@ -234,6 +281,9 @@ class ContextTests(unittest.TestCase):
             "bootPlan": {
                 "normalIBSSAdditionalPlans": ["ibss-skip-display-init"],
                 "restoreIBSSAdditionalPlans": ["ibss-skip-display-init"],
+                "preservesIM4PCompression": False,
+                "normalBootUsesStaticTrustCache": False,
+                "optionalPassthroughFirmware": [],
             },
         }))
         self.environment = {
@@ -276,6 +326,50 @@ class ContextTests(unittest.TestCase):
             with patch.dict(os.environ, self.environment, clear=True):
                 with self.assertRaisesRegex(WorkflowError, "no reviewed boot plan"):
                     Context.load()
+        finally:
+            os.chdir(previous)
+
+    def test_rejects_boot_plan_without_compression_policy(self):
+        document = json.loads(self.context_file.read_text())
+        del document["bootPlan"]["preservesIM4PCompression"]
+        self.context_file.write_text(json.dumps(document))
+        previous = Path.cwd()
+        try:
+            os.chdir(self.work)
+            with patch.dict(os.environ, self.environment, clear=True):
+                with self.assertRaisesRegex(WorkflowError, "no IM4P compression policy"):
+                    Context.load()
+        finally:
+            os.chdir(previous)
+
+    def test_compression_policy_reaches_apply_and_repack(self):
+        document = json.loads(self.context_file.read_text())
+        document["bootPlan"]["preservesIM4PCompression"] = True
+        self.context_file.write_text(json.dumps(document))
+        previous = Path.cwd()
+        try:
+            os.chdir(self.work)
+            with patch.dict(os.environ, self.environment, clear=True):
+                context = Context.load()
+            self.assertTrue(context.preserve_im4p_compression)
+            target = self.work / "kernel.im4p"
+            target.write_bytes(b"pristine")
+            commands = []
+
+            def fake_run(command, **_):
+                commands.append([str(part) for part in command])
+                if command[1] == "apply":
+                    Path(command[5]).write_bytes(b"patched")
+
+            with (
+                patch("liter8_workflow.run", side_effect=fake_run),
+                patch.object(Context, "record_hash"),
+            ):
+                context.apply("kernel", "restore", target, record_name="kernel",
+                              capture_records=False)
+                context.repack_im4p(target, self.work / "raw", self.work / "out.im4p")
+            self.assertEqual([command[-1] for command in commands],
+                             ["--preserve-compression"] * 2)
         finally:
             os.chdir(previous)
 
@@ -770,8 +864,10 @@ class ContextTests(unittest.TestCase):
         self.assertTrue((runtime.parent / "tools/sshpass").is_symlink())
 
         # Generated payloads are intentionally resumable across CLI runs.
+        # exist_ok because prepare_runtime copies the whole of device/, so this
+        # directory is already there on any checkout where payloads were built.
         generated = runtime / "payload/operator-note"
-        generated.parent.mkdir()
+        generated.parent.mkdir(exist_ok=True)
         generated.write_text("keep me")
         self.assertEqual(prepare_runtime(context), runtime)
         self.assertEqual(generated.read_text(), "keep me")
@@ -841,7 +937,10 @@ class ContextTests(unittest.TestCase):
 
     def test_userland_provisioning_is_wired_into_device_verification(self):
         provisioner = (DEVICE / "sshrd_provision.sh").read_text()
-        self.assertIn("ticket setup userland pairing screentime injection", provisioner)
+        self.assertLessEqual(
+            {"ticket", "setup", "userland", "pairing", "screentime", "injection"},
+            default_step_set(provisioner, r'^STEPS="([^"]*)"'),
+        )
         self.assertIn("mount -u -o rw /dev/disk1s2", provisioner)
         self.assertIn("Data volume NOT writable", provisioner)
         self.assertIn("verify_userland_patch coreauthd", provisioner)
@@ -932,7 +1031,10 @@ class ContextTests(unittest.TestCase):
 
         self.assertIn("-install_name /usr/lib/l8pair.dylib", builder)
         self.assertIn('"$BASE/l8pair_auth.m"', builder)
-        self.assertIn("sileo helpers cache injection pairing", payload_builder)
+        self.assertLessEqual(
+            {"sileo", "helpers", "cache", "injection", "pairing"},
+            default_step_set(payload_builder, r'^WANT="\$\{\*:-([^}]*)\}"'),
+        )
         self.assertIn('"lockdownd": ("/usr/lib/l8pair.dylib"', fixups)
 
         self.assertIn('strcmp(program, "remotepairingdeviced")', remotexpc_source)
@@ -991,7 +1093,7 @@ class ContextTests(unittest.TestCase):
         self.assertIn("kRatchetStateBytes = 0x14b", coreauth_source)
         self.assertIn("length >= kRatchetStateBytes", coreauth_source)
         self.assertIn("method_setImplementation", coreauth_source)
-        self.assertIn('dylib_path = "/usr/lib/l8coreauth.dylib"', fixups)
+        self.assertIn('"coreauthd": ("/usr/lib/l8coreauth.dylib"', fixups)
 
     def test_userland_builder_preserves_identity_and_entitlements(self):
         liter8 = SCRIPTS.parent / ".build/debug/liter8"
@@ -1042,6 +1144,140 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(manifest["kernelPlan"], "boot-public")
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
+    def test_boot_sequence_uses_only_firmware_in_the_identity(self):
+        # The j171aap 23H30 erase identity has no SPTM/TXM, PMP or WCH, and its
+        # profile says so. The absence alone is not enough any more.
+        components = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+        fixture_context = self.make_boot_set(
+            "restore", components=components, optional_firmware=J171AAP_OPTIONAL)
+        self.assertEqual(
+            [name for name, _, _ in selected_firmware_sequence(
+                components, "restore", optional_firmware=J171AAP_OPTIONAL)],
+            ["RestoreLogo.img4", "ANE.img4", "AOP.img4", "AVE.img4",
+             "GFX.img4", "ISP.img4", "RestoreTrustCache.img4", "SIO.img4"],
+        )
+        self.assertEqual(validate_boot_set(fixture_context, "restore"), self.work / "Ramdisk")
+        self.assertFalse(has_txm(components, "restore"))
+
+    def test_rejects_an_identity_missing_firmware_common_to_every_board(self):
+        """A dropped common image must fail here, not reach the device.
+
+        Only SPTM, PMP and WCH may be absent, and only because j171aap has no
+        SPTM. Selecting by what the identity happens to contain would omit a
+        common image silently, and validate_boot_set derives its required
+        filenames from the same result, so nothing downstream would catch it.
+        """
+        # SPTM and TXM travel together or has_txm rejects the pair first.
+        n104 = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        n104["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        j171aap = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+        for board, components, optional in (
+            ("n104", n104, frozenset()),
+            ("j171aap", j171aap, J171AAP_OPTIONAL),
+        ):
+            for dropped in ("ANE", "AOP", "AVE", "GFX", "ISP", "SIO", "SEP", "RestoreLogo"):
+                partial = {k: v for k, v in components.items() if k != dropped}
+                with self.subTest(board=board, dropped=dropped):
+                    with self.assertRaisesRegex(
+                        WorkflowError, f"missing required boot firmware: {dropped}"
+                    ):
+                        selected_firmware_sequence(
+                            partial, "restore", optional_firmware=optional
+                        )
+
+    def test_optional_firmware_is_optional_only_where_the_profile_says_so(self):
+        """The same absence must pass for j171aap and fail for n104ap.
+
+        Deciding by presence alone is what let an n104 identity missing PMP or
+        WCH ship an incomplete chain: those images were mandatory in the n104
+        workflow and only j171aap has the documented exception.
+        """
+        components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        components["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        # Dropping SPTM drops TXM with it; has_txm owns that pairing and has its
+        # own test.
+        for dropped in (
+            ("Ap,SecurePageTableMonitor", "Ap,RestoreTrustedExecutionMonitor"),
+            ("PMP",),
+            ("WCHFirmwareUpdater",),
+        ):
+            partial = {k: v for k, v in components.items() if k not in dropped}
+            with self.subTest(board="j171aap", dropped=dropped[0]):
+                selected = [name for name, _, _ in selected_firmware_sequence(
+                    partial, "restore", optional_firmware=J171AAP_OPTIONAL)]
+                self.assertNotIn(f"{dropped[0]}.img4", selected)
+                self.assertIn("ANE.img4", selected)
+            with self.subTest(board="n104ap", dropped=dropped[0]):
+                # n104ap declares nothing optional, which is every profile today.
+                with self.assertRaisesRegex(
+                    WorkflowError, f"missing required boot firmware: .*{re.escape(dropped[0])}"
+                ):
+                    selected_firmware_sequence(partial, "restore")
+
+    def test_rejects_an_optional_list_naming_firmware_that_is_not_passthrough(self):
+        """A typo in a profile must fail loudly rather than widen nothing."""
+        components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        components["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        with self.assertRaisesRegex(WorkflowError, "not passthrough: PMPP"):
+            selected_firmware_sequence(
+                components, "restore", optional_firmware=frozenset({"PMPP"})
+            )
+
+    def test_rejects_an_identity_missing_the_selected_trust_cache(self):
+        """Exactly one trust cache is sent, and it is the one the profile picks."""
+        components = {
+            name: name for name, _, _ in PASSTHROUGH_IMG4 if name != "StaticTrustCache"
+        }
+        components["Ap,TrustedExecutionMonitor"] = "txm.im4p"
+        with self.assertRaisesRegex(WorkflowError, "missing required boot firmware: StaticTrustCache"):
+            selected_firmware_sequence(components, "normal", static_trust_cache=True)
+        # The other cache being absent is irrelevant when it is not selected.
+        self.assertIn(
+            "RestoreTrustCache.img4",
+            [name for name, _, _ in selected_firmware_sequence(components, "normal")],
+        )
+
+    def test_static_trust_cache_is_profile_selected_for_normal_boot_only(self):
+        components = {
+            name: f"Firmware/{name}.im4p" for name in (
+                "RestoreLogo", "ANE", "AOP", "AVE", "GFX", "ISP",
+                "StaticTrustCache", "RestoreTrustCache", "SIO", "SEP",
+            )
+        }
+
+        def names(mode, static):
+            return [name for name, _, _ in selected_firmware_sequence(
+                components, mode, static_trust_cache=static,
+                optional_firmware=J171AAP_OPTIONAL)]
+
+        self.assertIn("StaticTrustCache.img4", names("normal", True))
+        self.assertNotIn("RestoreTrustCache.img4", names("normal", True))
+        for mode, static in (("normal", False), ("restore", True), ("restore", False)):
+            self.assertIn("RestoreTrustCache.img4", names(mode, static))
+            self.assertNotIn("StaticTrustCache.img4", names(mode, static))
+
+    def test_rejects_partial_sptm_txm_boot_chain(self):
+        components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+        del components["Ap,SecurePageTableMonitor"]
+        components["Ap,RestoreTrustedExecutionMonitor"] = "txm.im4p"
+        # SPTM has to be legitimately optional here, or the missing-firmware
+        # check rejects it before has_txm can see the broken pair. The pairing
+        # rule is what this test is about.
+        with self.assertRaisesRegex(WorkflowError, "incomplete restore SPTM/TXM pair"):
+            selected_firmware_sequence(
+                components, "restore", optional_firmware=J171AAP_OPTIONAL
+            )
+
     def test_restore_boot_sequence_sends_ramdisk_before_devicetree(self):
         fixture_context = self.make_boot_set("restore")
         with (
@@ -1066,12 +1302,21 @@ class ContextTests(unittest.TestCase):
             ["/custom/irecovery", "-c", "bootx"],
         )
 
-    def make_boot_set(self, mode, *, kernel_plan=None):
+    def make_boot_set(self, mode, *, kernel_plan=None, components=None,
+                      optional_firmware=frozenset()):
         staging = self.work / "boot-staging"
         staging.mkdir()
+        if components is None:
+            # The iPhone 11 identity: every passthrough image plus TXM.
+            components = {name: name for name, _, _ in PASSTHROUGH_IMG4}
+            components[
+                "Ap,TrustedExecutionMonitor" if mode == "normal"
+                else "Ap,RestoreTrustedExecutionMonitor"
+            ] = "txm.im4p"
         names = {
             "iBSS.raw", "iBEC.img4", "DeviceTree.img4", "SEP.img4", "Kernelcache.img4",
-            *(name for name, _, _ in FIRMWARE_SEQUENCE),
+            *(name for name, _, _ in selected_firmware_sequence(
+                components, mode, optional_firmware=optional_firmware)),
         }
         if mode == "restore":
             names.add("RestoreRamdisk.img4")
@@ -1083,6 +1328,9 @@ class ContextTests(unittest.TestCase):
         fixture_context = type("FixtureContext", (), {
             "profile_id": "fixture-profile",
             "work": self.work,
+            "components": components,
+            "normal_boot_static_trust_cache": False,
+            "optional_passthrough_firmware": optional_firmware,
         })()
         write_boot_manifest(fixture_context, staging, mode, kernel_plan=kernel_plan)
         publish_directory(staging, self.work / "Ramdisk")

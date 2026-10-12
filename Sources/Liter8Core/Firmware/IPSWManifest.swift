@@ -125,13 +125,37 @@ public enum DeviceIBSSAdditionalPlan: String, Codable, Equatable, Sendable {
 public struct DeviceBootPlan: Codable, Equatable, Sendable {
     public let normalIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
     public let restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
+    /// Re-encode patched IM4P payloads in their shipped compression instead
+    /// of uncompressed. n104 boots uncompressed images; the j171aap iBoot
+    /// rejects them and only accepts restricted LZFSE (see FirmwareArtifact).
+    public let preservesIM4PCompression: Bool
+    /// Send StaticTrustCache instead of RestoreTrustCache on normal boot.
+    /// n104 boots both modes with the restore cache; j171aap's normal boot
+    /// needs the System-volume cache. SSHRD always uses the restore cache.
+    public let normalBootUsesStaticTrustCache: Bool
+    /// Passthrough firmware this board legitimately does not ship.
+    ///
+    /// Empty is the safe default and the state of every profile registered
+    /// here: a component absent from an identity that should carry it is a
+    /// manifest we do not understand, and the boot set must fail rather than
+    /// quietly send an incomplete chain. j171aap is the known exception, being
+    /// A12/PPL with no SPTM and therefore none of SPTM, PMP or WCH, and it
+    /// states that itself rather than the selection inferring it from which
+    /// components happen to be present.
+    public let optionalPassthroughFirmware: [String]
 
     public init(
         normalIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
-        restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan]
+        restoreIBSSAdditionalPlans: [DeviceIBSSAdditionalPlan],
+        preservesIM4PCompression: Bool = false,
+        normalBootUsesStaticTrustCache: Bool = false,
+        optionalPassthroughFirmware: [String] = []
     ) {
         self.normalIBSSAdditionalPlans = normalIBSSAdditionalPlans
         self.restoreIBSSAdditionalPlans = restoreIBSSAdditionalPlans
+        self.preservesIM4PCompression = preservesIM4PCompression
+        self.normalBootUsesStaticTrustCache = normalBootUsesStaticTrustCache
+        self.optionalPassthroughFirmware = optionalPassthroughFirmware
     }
 }
 

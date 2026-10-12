@@ -202,11 +202,25 @@ say "mounts"
 # Preboot holds the restore-bound APTicket extracted by the ticket step below. The ramdisk
 # mounts only System and Data on its own, so searching an unmounted /mnt6 would otherwise
 # look like a missing ticket. The ticket step requires exactly one matching image.
+# Preboot's partition number differs by device (disk1s6 on n104, disk1s5 on j171aap,
+# where disk1s6 is Update), so select it by its APFS role. /mnt6 stays the mountpoint.
+mkdir -p payload/.work
+sh_dev '/usr/sbin/ioreg -r -c AppleAPFSVolume -l' > payload/.work/apfs-volumes.txt \
+    || die "could not read APFS volume roles"
+preboot_device=$(python3 apfs_role.py Preboot < payload/.work/apfs-volumes.txt) \
+    || die "could not identify the Preboot volume"
+must_dev "
+mkdir -p /mnt1 /mnt2 /mnt6 2>/dev/null
+/sbin/mount | /usr/bin/grep -q '^$preboot_device on /mnt6 ' || {
+    /sbin/umount /mnt6 2>/dev/null
+    /sbin/mount_apfs -o rdonly '$preboot_device' /mnt6 || { echo 'could not mount Preboot'; exit 1; }
+}
+echo DONE_OK
+" "could not mount the Preboot volume"
 must_dev '
 mkdir -p /mnt1 /mnt2 /mnt6 2>/dev/null
 /sbin/mount_apfs /dev/disk1s1 /mnt1 2>/dev/null
 /sbin/mount_apfs /dev/disk1s2 /mnt2 2>/dev/null
-/sbin/mount_apfs /dev/disk1s6 /mnt6 2>/dev/null
 /sbin/mount -u -o rw /dev/disk1s1 2>/dev/null
 /sbin/mount -u -o rw /dev/disk1s2 2>/dev/null
 [ -d /mnt1/Applications ] || { echo "System volume not mounted"; exit 1; }

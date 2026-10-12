@@ -18,6 +18,16 @@ public struct KernelValeriaResolver: Sendable {
 
     public init() {}
 
+    /// Records for the composite boot plans. A kernel profile may omit this
+    /// family; its cave follows the scoped Sandbox shim's predecessor, which
+    /// not every kernel has. `resolve` itself never skips.
+    static func compositeRecords(in image: BinaryImage) throws -> [PatchRecord] {
+        if KernelResolverProfileRegistry.detect(in: image)?.omittedResolvers.contains(name) == true {
+            return []
+        }
+        return try Self().resolve(in: image)
+    }
+
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
         let layout = try MachOLayout(image: image)
         let ownerLoad = try Self.classCommandRegistrationOwnerCheck.uniqueMatch(

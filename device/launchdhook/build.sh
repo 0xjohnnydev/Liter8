@@ -10,7 +10,10 @@ TOOLS="$BASE/../../tools"
 # See https://github.com/Xplo8E/Liter8/issues/2.
 LDID="$TOOLS/ldid_macosx_arm64"
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" || LDID=$(command -v ldid || true)
-SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+# Command Line Tools have no iPhoneOS SDK. Point LITER8_IOS_SDK at an
+# unpacked one (for example Theos's) to build without Xcode.
+SDK="${LITER8_IOS_SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
+[ -d "$SDK" ] || { echo "[!] iOS SDK missing: $SDK" >&2; exit 1; }
 OUT="$BASE/lhook.dylib"
 
 # -x passes for an arm64 binary on an Intel Mac, so check that it runs and
@@ -36,7 +39,7 @@ verify_deps() {
 }
 
 for arch in arm64 arm64e; do
-    xcrun -sdk iphoneos clang -arch "$arch" -miphoneos-version-min=15.0 \
+    xcrun clang -arch "$arch" -miphoneos-version-min=15.0 \
         -isysroot "$SDK" -dynamiclib -O2 -Wall -Wextra \
         -Wl,-not_for_dyld_shared_cache -install_name /usr/lib/lhook.dylib \
         -o "$BASE/lhook_$arch.dylib" "$BASE/lhook.c"
@@ -70,7 +73,7 @@ build_universal() {
         [ "$kind" = dylib ] && extra="-dynamiclib -Wl,-not_for_dyld_shared_cache -install_name /usr/lib/systemhook.dylib"
         # extra is intentionally word-split: it is a fixed, source-controlled linker option set.
         # shellcheck disable=SC2086
-        xcrun -sdk iphoneos clang -arch "$arch" -miphoneos-version-min=15.0 \
+        xcrun clang -arch "$arch" -miphoneos-version-min=15.0 \
             -isysroot "$SDK" -O2 -Wall -Wextra $extra \
             -o "$BASE/${name}_$arch" "$BASE/$source"
     done

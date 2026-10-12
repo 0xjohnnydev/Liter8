@@ -23,11 +23,70 @@ PASSTHROUGH_IMG4 = [
     ("GFX", "GFX.img4", "gfxf"),
     ("ISP", "ISP.img4", "ispf"),
     ("PMP", "PMP.img4", "pmpf"),
+    ("StaticTrustCache", "StaticTrustCache.img4", "trst"),
     ("RestoreTrustCache", "RestoreTrustCache.img4", "rtsc"),
     ("SIO", "SIO.img4", "siof"),
     ("WCHFirmwareUpdater", "WCH.img4", "wchf"),
     ("SEP", "SEP.img4", "rsep"),
 ]
+
+TRUST_CACHES = {"StaticTrustCache", "RestoreTrustCache"}
+
+def selected_passthrough(
+    components: dict[str, str], mode: str, *, static_trust_cache: bool = False,
+    optional_firmware: frozenset[str] = frozenset()
+) -> list[tuple[str, str, str]]:
+    """Firmware from PASSTHROUGH_IMG4 that the selected BuildManifest identity has.
+
+    Exactly one trust cache is sent. n104 boots both modes with
+    RestoreTrustCache; a profile whose normal boot needs the System-volume
+    cache sets static_trust_cache.
+
+    Everything else is mandatory unless the profile names it in
+    optional_firmware. That list comes from the reviewed profile, never from
+    which components happen to be present: deciding by presence means an
+    identity missing an image it should carry passes silently, and
+    validate_boot_set derives its required filenames from this same result, so
+    nothing downstream would notice before the chain reached the device.
+
+    The empty default is the conservative one and the state of every profile
+    registered today, which makes the whole set mandatory. j171aap is the known
+    exception, being A12/PPL with no SPTM and therefore none of SPTM, PMP or
+    WCH, and it will say so in its own profile.
+    """
+    trust_cache = (
+        "StaticTrustCache" if mode == "normal" and static_trust_cache
+        else "RestoreTrustCache"
+    )
+    unknown = sorted(optional_firmware - {entry[0] for entry in PASSTHROUGH_IMG4})
+    if unknown:
+        raise WorkflowError(
+            f"profile marks firmware optional that is not passthrough: {', '.join(unknown)}"
+        )
+    required = {
+        entry[0] for entry in PASSTHROUGH_IMG4
+        if entry[0] not in optional_firmware and entry[0] not in TRUST_CACHES
+    } | {trust_cache}
+    missing = sorted(required - components.keys())
+    if missing:
+        raise WorkflowError(f"BuildManifest is missing required boot firmware: {', '.join(missing)}")
+    return [
+        entry for entry in PASSTHROUGH_IMG4
+        if entry[0] in components and (entry[0] not in TRUST_CACHES or entry[0] == trust_cache)
+    ]
+
+
+def has_txm(components: dict[str, str], mode: str) -> bool:
+    """Reject a partial SPTM/TXM pair instead of producing an incomplete chain."""
+    txm_name = (
+        "Ap,TrustedExecutionMonitor" if mode == "normal"
+        else "Ap,RestoreTrustedExecutionMonitor"
+    )
+    has_sptm = "Ap,SecurePageTableMonitor" in components
+    has_monitor = txm_name in components
+    if has_sptm != has_monitor:
+        raise WorkflowError(f"BuildManifest has an incomplete {mode} SPTM/TXM pair")
+    return has_monitor
 
 
 def ticket_from_environment() -> Path:
@@ -110,6 +169,12 @@ def write_boot_manifest(
 def build_normal_boot() -> None:
     context = Context.load()
     ticket = ticket_from_environment()
+    firmware = selected_passthrough(
+        context.components, "normal",
+        static_trust_cache=context.normal_boot_static_trust_cache,
+        optional_firmware=context.optional_passthrough_firmware,
+    )
+    patch_txm = has_txm(context.components, "normal")
 
     # Build beside .liter8 first. A failed resolver or signing step leaves the
     # operator's previous Ramdisk directory intact.
@@ -140,7 +205,7 @@ def build_normal_boot() -> None:
         context.extract_im4p(context.component("iBoot"), staging / "iBoot.raw")
 
         print("[*] normal boot: signing firmware payloads", flush=True)
-        for component, output_name, fourcc in PASSTHROUGH_IMG4:
+        for component, output_name, fourcc in firmware:
             create_img4(
                 context,
                 context.component(component),
@@ -149,11 +214,12 @@ def build_normal_boot() -> None:
                 fourcc=fourcc,
             )
 
-        print("[*] normal boot: patching TXM", flush=True)
-        txm = staging / ".TXM.im4p"
-        shutil.copy2(context.component("Ap,TrustedExecutionMonitor"), txm)
-        context.apply("txm", "boot", txm, record_name="boot-txm")
-        create_img4(context, txm, ticket, staging / "TXM.img4")
+        if patch_txm:
+            print("[*] normal boot: patching TXM", flush=True)
+            txm = staging / ".TXM.im4p"
+            shutil.copy2(context.component("Ap,TrustedExecutionMonitor"), txm)
+            context.apply("txm", "boot", txm, record_name="boot-txm")
+            create_img4(context, txm, ticket, staging / "TXM.img4")
 
         print("[*] normal boot: patching DeviceTree", flush=True)
         devicetree = staging / ".DeviceTree.im4p"
@@ -169,7 +235,11 @@ def build_normal_boot() -> None:
         print("[*] normal boot: patching kernelcache", flush=True)
         kernel = staging / ".Kernelcache.im4p"
         shutil.copy2(context.component("KernelCache"), kernel)
-        kernel_plan = "boot-public"
+        # boot-jit adds the code-signing-invalid patches so runtime tweak hooks
+        # are not killed. It is opt-in (fw get-boot --tweaks) because it weakens
+        # code signing for every process, and its extra records resolve only on
+        # a kernel profile that registers the patches.
+        kernel_plan = "boot-jit" if os.environ.get("LITER8_ENABLE_TWEAK_HOOKS") == "1" else "boot-public"
         context.apply("kernel", kernel_plan, kernel, record_name="boot-kernel")
         create_img4(
             context, kernel, ticket, staging / "Kernelcache.img4", fourcc="rkrn"
@@ -188,6 +258,11 @@ def build_restore_boot() -> None:
     """Build the ticketed SSH restore-ramdisk artifact set."""
     context = Context.load()
     ticket = ticket_from_environment()
+    firmware = selected_passthrough(
+        context.components, "restore",
+        optional_firmware=context.optional_passthrough_firmware,
+    )
+    patch_txm = has_txm(context.components, "restore")
 
     with tempfile.TemporaryDirectory(prefix="rd-staging-", dir=context.state) as directory:
         staging = Path(directory)
@@ -212,7 +287,7 @@ def build_restore_boot() -> None:
         create_img4(context, ibec_im4p, ticket, staging / "iBEC.img4")
 
         print("[*] SSHRD: signing firmware payloads", flush=True)
-        for component, output_name, fourcc in PASSTHROUGH_IMG4:
+        for component, output_name, fourcc in firmware:
             create_img4(
                 context,
                 context.component(component),
@@ -221,11 +296,12 @@ def build_restore_boot() -> None:
                 fourcc=fourcc,
             )
 
-        print("[*] SSHRD: patching TXM", flush=True)
-        txm = staging / ".TXM.im4p"
-        shutil.copy2(context.component("Ap,RestoreTrustedExecutionMonitor"), txm)
-        context.apply("txm", "restore", txm, record_name="rd-txm")
-        create_img4(context, txm, ticket, staging / "TXM.img4")
+        if patch_txm:
+            print("[*] SSHRD: patching TXM", flush=True)
+            txm = staging / ".TXM.im4p"
+            shutil.copy2(context.component("Ap,RestoreTrustedExecutionMonitor"), txm)
+            context.apply("txm", "restore", txm, record_name="rd-txm")
+            create_img4(context, txm, ticket, staging / "TXM.img4")
 
         print("[*] SSHRD: patching DeviceTree", flush=True)
         devicetree = staging / ".DeviceTree.im4p"

@@ -88,6 +88,28 @@ struct SerialConsoleOption: ParsableArguments {
     }
 }
 
+/// `--tweaks`, for get-boot only: the plan is baked into the normal-boot
+/// kernelcache, so it would look like it had an effect anywhere else.
+struct TweakHooksOption: ParsableArguments {
+    @Flag(
+        name: .customLong("tweaks"),
+        help: """
+        Build the normal-boot kernelcache with the code-signing-invalid patches \
+        (kernel boot-jit) so runtime tweak hooks survive. Off by default: it \
+        weakens code signing for every process.
+        """
+    )
+    var enableTweakHooks = false
+
+    /// Always written, for the same reason as `--serial`: the child environment
+    /// is seeded from this process's own, so an inherited
+    /// `LITER8_ENABLE_TWEAK_HOOKS=1` must not select boot-jit for a run that
+    /// did not ask for it.
+    var environment: [String: String] {
+        ["LITER8_ENABLE_TWEAK_HOOKS": enableTweakHooks ? "1" : "0"]
+    }
+}
+
 struct APDemotionOption: ParsableArguments {
     @Flag(
         name: .customLong("demote-ap"),
@@ -349,6 +371,7 @@ struct Firmware: ParsableCommand {
         @OptionGroup var prepared: FirmwarePreparedOptions
         @OptionGroup var serial: SerialConsoleOption
         @OptionGroup var demotion: APDemotionOption
+        @OptionGroup var tweaks: TweakHooksOption
 
         func run() throws {
             let resolved = try resolveAPTicket(
@@ -359,7 +382,9 @@ struct Firmware: ParsableCommand {
             try runPreparedFirmwareAction(
                 "get-boot", common: common, prepared: prepared,
                 ticket: resolved,
-                environment: serial.environment.merging(demotion.environment) { _, new in new }
+                environment: serial.environment
+                    .merging(demotion.environment) { _, new in new }
+                    .merging(tweaks.environment) { _, new in new }
             )
         }
     }

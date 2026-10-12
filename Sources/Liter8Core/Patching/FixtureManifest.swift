@@ -167,6 +167,8 @@ public struct FixtureManifest: Codable, Sendable {
             return try IBECPinotIgnoreFailureResolver().resolve(in: image)
         case KernelRestoreResolver.name:
             return try KernelRestoreResolver().resolve(in: image)
+        case KernelPPLTrustCacheResolver.name:
+            return try KernelPPLTrustCacheResolver().resolve(in: image)
         case KernelBootPolicyResolver.name:
             return try KernelBootPolicyResolver().resolve(in: image)
         case KernelAKSResolver.name:
@@ -179,12 +181,22 @@ public struct FixtureManifest: Codable, Sendable {
             return try KernelCredentialManagerResolver().resolve(in: image)
         case KernelSandboxResolver.name:
             return try KernelSandboxResolver().resolve(in: image)
+        case KernelSandboxCompatibilityResolver.name:
+            return try KernelSandboxCompatibilityResolver().resolve(in: image)
+        case KernelPPLAllowInvalidResolver.name:
+            return try KernelPPLAllowInvalidResolver().resolve(in: image)
+        case KernelVMFaultCSBypassResolver.name:
+            return try KernelVMFaultCSBypassResolver().resolve(in: image)
+        case KernelVMMapProtectResolver.name:
+            return try KernelVMMapProtectResolver().resolve(in: image)
         case KernelValeriaResolver.name:
             return try KernelValeriaResolver().resolve(in: image)
         case KernelBootResolver.name:
             return try KernelBootResolver().resolve(in: image)
         case KernelBootCompatibilityResolver.name:
             return try KernelBootCompatibilityResolver().resolve(in: image)
+        case KernelBootJITResolver.name:
+            return try KernelBootJITResolver().resolve(in: image)
         case KernelDiagnosticResolver.name:
             return try KernelDiagnosticResolver().resolve(in: image)
         default:

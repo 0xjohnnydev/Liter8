@@ -37,7 +37,7 @@ public struct KernelBootResolver: Sendable {
             sep: KernelSEPResolver().resolve(in: image),
             credentialManager: KernelCredentialManagerResolver().resolve(in: image),
             sandbox: KernelSandboxResolver().resolve(in: image),
-            valeria: KernelValeriaResolver().resolve(in: image)
+            valeria: KernelValeriaResolver.compositeRecords(in: image)
         )
     }
 }
@@ -58,9 +58,28 @@ public struct KernelBootCompatibilityResolver: Sendable {
             bootPolicy: KernelBootPolicyResolver().resolve(in: image),
             sep: KernelSEPResolver().resolve(in: image),
             credentialManager: KernelCredentialManagerResolver().resolve(in: image),
-            sandbox: KernelSandboxResolver(includeScopedVnodeOpen: false).resolve(in: image),
-            valeria: KernelValeriaResolver().resolve(in: image)
+            sandbox: KernelSandboxCompatibilityResolver().resolve(in: image),
+            valeria: KernelValeriaResolver.compositeRecords(in: image)
         )
+    }
+}
+
+/// Opt-in normal-boot plan that also lets running processes modify their own
+/// code pages, which runtime tweak injection (ElleKit function hooks) needs.
+///
+/// This is `boot-public` plus the code-signing-invalid patches. It is kept
+/// separate because those patches weaken the code-signing guarantee for every
+/// process, so a boot opts into them explicitly rather than getting them in the
+/// reviewed default. The extra records resolve only on a kernel profile that
+/// registers the `kernel-codesign-invalid` variant; on any other kernel the
+/// composed plan equals `boot-public`.
+public struct KernelBootJITResolver: Sendable {
+    public static let name = "kernel-boot-jit"
+    public init() {}
+
+    public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
+        try KernelBootCompatibilityResolver().resolve(in: image)
+            + KernelCodeSigningResolver.requiredRecords(in: image)
     }
 }
 

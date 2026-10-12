@@ -76,6 +76,12 @@ struct IM4P: ParsableCommand {
         @Argument(help: ArgumentHelp("IM4P to write.", valueName: "output.im4p"))
         var output: String
 
+        @Flag(
+            name: .customLong("preserve-compression"),
+            help: "Keep the shipped IM4P compression instead of writing the payload back uncompressed."
+        )
+        var preserveCompression = false
+
         func run() throws {
             let inputURL = URL(fileURLWithPath: input).standardizedFileURL
             let payloadURL = URL(fileURLWithPath: payload).standardizedFileURL
@@ -85,17 +91,21 @@ struct IM4P: ParsableCommand {
             }
             let artifact = try IM4P.requireIM4P(at: inputURL)
             let replacement = try Data(contentsOf: payloadURL, options: [.mappedIfSafe])
-            let encoded = try artifact.encoded(replacingPayloadWith: replacement)
-            try encoded.write(to: outputURL, options: .atomic)
+            let encoded = try artifact.encoded(
+                replacingPayloadWith: replacement,
+                preservingCompression: preserveCompression
+            )
 
             // Re-open our own result and compare the extracted payload. This
-            // catches DER-length or PAYP mistakes before reporting success.
+            // catches DER-length or PAYP mistakes before anything is written,
+            // so a failed repack leaves a previous output untouched.
             let roundTrip = try FirmwareArtifact(data: encoded)
             guard roundTrip.kind == .im4p, roundTrip.payload == replacement else {
                 throw PatchfinderError.invalidFirmwareContainer(
                     "repacked payload failed round-trip verification"
                 )
             }
+            try encoded.write(to: outputURL, options: .atomic)
             print("repacked \(artifact.fourcc ?? "IM4P") and verified \(replacement.count)-byte payload")
             print("wrote \(outputURL.path)")
         }
