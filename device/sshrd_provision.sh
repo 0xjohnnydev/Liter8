@@ -781,23 +781,51 @@ fi
 # until the root-owned /var/jb/.liter8-localauth marker exists. Two separate
 # switches, neither of which this step touches.
 #
-# local:device:mode, declared here rather than inside the step because the
-# verification at the bottom of this script reads the same table. Two copies
-# drifted: one listed the mode and the other did not check it.
+# local:device:mode:package-form, declared here rather than inside the step
+# because the verification at the bottom of this script reads the same table.
+# Two copies drifted: one listed the mode and the other did not check it.
 #
 # libinjector lands twice: at the canonical path it names internally, and at the
 # loader path lhook dlopens. Two copies rather than a symlink because nothing
 # else in these scripts creates one, so ln is not a tool the ramdisk is known to
 # have, and a copy is hash-verifiable.
+#
+# The fourth field is what ElleKit's own deb puts at that path, because
+# finalize.sh installs that deb on a booted device and its dpkg -i replaces
+# three of these seven. Verification has to accept both forms: requiring the
+# bytes and mode provisioning wrote reported a correctly finalized device
+# MISMATCH, and re-provisioning then overwrote package-owned files, after which
+# the next finalize saw ellekit registered and never put them back.
+#
+#   pkg=<member>      the package ships a regular file; this is its tar member
+#   pkglink=<member>  the package ships a symlink resolving to that member
+#   -                 not in the package, so only the provisioned form is valid
+#
+# Taken from the package: ar x, then tar tvf on data.tar.xz. The two ellekit/
+# dylibs are its own unsigned 0644 copies and TweakLoader.dylib is a symlink to
+# ellekit/libinjector.dylib. The mode is not re-checked for those three: dpkg
+# owns them after finalize and this script is not the authority on them.
 TWEAK_SET="
-payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755
-payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755
-payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755
-payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755
-payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644
-payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755
-payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist:0644
+payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/ellekit/libinjector.dylib:0755:pkg=./var/jb/usr/lib/ellekit/libinjector.dylib
+payload/tweaks/libinjector.dylib:/mnt2/jb/usr/lib/TweakLoader.dylib:0755:pkglink=./var/jb/usr/lib/ellekit/libinjector.dylib
+payload/tweaks/MobileSafety.dylib:/mnt2/jb/usr/lib/ellekit/MobileSafety.dylib:0755:pkg=./var/jb/usr/lib/ellekit/MobileSafety.dylib
+payload/tweaks/TweakInject/l8localauth.dylib:/mnt2/jb/usr/lib/TweakInject/l8localauth.dylib:0755:-
+payload/tweaks/TweakInject/l8localauth.plist:/mnt2/jb/usr/lib/TweakInject/l8localauth.plist:0644:-
+payload/tweaks/TweakInject/l8persona.dylib:/mnt2/jb/usr/lib/TweakInject/l8persona.dylib:0755:-
+payload/tweaks/TweakInject/l8persona.plist:/mnt2/jb/usr/lib/TweakInject/l8persona.plist:0644:-
 "
+
+# Split one table entry into tweak_src/tweak_dst/tweak_mode/tweak_pkg. Written
+# once because four colon-separated fields parsed inline three times is where
+# the install and verify copies drifted apart in the first place.
+tweak_fields() {
+    tweak_src=${1%%:*}
+    _rest=${1#*:}
+    tweak_dst=${_rest%%:*}
+    _rest=${_rest#*:}
+    tweak_mode=${_rest%%:*}
+    tweak_pkg=${_rest#*:}
+}
 
 # How much of the set the host built, decided once so this step and the
 # verification at the bottom cannot disagree about what "nothing built" means.
@@ -807,6 +835,41 @@ for entry in $TWEAK_SET; do
     if [ -f "${entry%%:*}" ]; then tweak_any=1; else TWEAK_PAYLOAD=partial; fi
 done
 [ "$tweak_any" = 1 ] || TWEAK_PAYLOAD=none
+
+# sha256 of one member of ElleKit's deb, extracted once and cached. Needed to
+# recognise the post-finalize form of the three paths dpkg owns. Prints nothing
+# when the deb is absent, which the callers treat as "cannot compare".
+tweak_pkg_hash() {
+    [ -f payload/tweaks/ellekit.deb ] || return 0
+    if [ ! -d payload/.work/ekpkg ]; then
+        mkdir -p payload/.work/ekpkg || return 0
+        # Named members only, for the reason fetch_payloads.sh gives: the full
+        # payload would also unpack symlinks pointing at absolute /var/jb paths
+        # that do not exist on a Mac, and a dangling one under device/ breaks
+        # the copytree in prepare_runtime.
+        ( cd payload/.work/ekpkg \
+            && ar x "$PWD/../../tweaks/ellekit.deb" \
+            && xz -dc data.tar.xz | tar xf - \
+                ./var/jb/usr/lib/ellekit/libinjector.dylib \
+                ./var/jb/usr/lib/ellekit/MobileSafety.dylib ) >/dev/null 2>&1 \
+            || return 0
+    fi
+    [ -f "payload/.work/ekpkg/$1" ] || return 0
+    shasum -a 256 "payload/.work/ekpkg/$1" | awk '{print $1}'
+}
+
+# Which of the two valid layouts the device is in. finalize.sh installs
+# ElleKit's deb on a booted device, and its dpkg -i replaces three of the seven
+# paths with the package's own copies, TweakLoader.dylib among them as a
+# symlink. A symlink there is therefore the one observable that says dpkg has
+# been through, since provisioning only ever writes a regular file.
+#
+# Read from the device, not assumed: this is the post-finalize form the package
+# ships, and the transition itself has not been watched on hardware yet.
+tweak_stage() {
+    sh_dev '[ -L /mnt2/jb/usr/lib/TweakLoader.dylib ] && echo finalized || echo provisioned' \
+        | tr -d '\r'
+}
 
 # Nothing built, rather than a bad build: fetch_payloads.sh skips the whole set
 # when ellekit.space is unreachable instead of ending a provision before
@@ -856,11 +919,23 @@ elif wants tweaks && [ "$CHECK_ONLY" = 0 ]; then
     # finalize.sh installs ElleKit's own deb on a booted device. They cannot come
     # from here: the names have to be symlinks and ln is not a tool the ramdisk
     # is known to have, and dpkg needs a booted bootstrap.
+    # After finalize, dpkg owns three of these seven. Writing our re-signed
+    # copies back over them puts unowned content under the package's name, turns
+    # the symlink the package wants at TweakLoader.dylib back into a regular
+    # file, and the next finalize sees ellekit registered so it never restores
+    # either. The four TweakInject payloads are ours and always install.
+    TWEAK_AT=$(tweak_stage)
+    [ "$TWEAK_AT" = finalized ] \
+        && skip "ellekit's deb is installed; its three files are left to dpkg"
     for entry in $TWEAK_SET; do
-        src=${entry%%:*}
-        rest=${entry#*:}
-        dst=${rest%:*}
-        mode=${rest##*:}
+        tweak_fields "$entry"
+        src=$tweak_src
+        dst=$tweak_dst
+        mode=$tweak_mode
+        if [ "$TWEAK_AT" = finalized ] && [ "$tweak_pkg" != - ]; then
+            skip "/var/jb${dst#/mnt2/jb} (package owned)"
+            continue
+        fi
         want=$(shasum -a 256 "$src" | awk '{print $1}')
         put "$src" "$dst.new"
         sh_dev "cat '$dst.new'" > payload/.work/tweak.staged
@@ -1187,6 +1262,52 @@ symbolic_mode() {
         *)    die "no symbolic form recorded for mode $1" ;;
     esac
 }
+
+# Say why one tweak-set entry's device copy is unacceptable, or print nothing.
+#
+# Two layouts are valid and a correct device can be in either: what provisioning
+# wrote, and what ElleKit's deb leaves at the three paths it owns once finalize
+# has installed it. Accepting only the first reported MISMATCH for a finalized
+# device, which is the normal end state of the documented workflow.
+tweak_entry_fault() {
+    tweak_fields "$1"
+    sh_dev "cat '$tweak_dst'" > payload/.work/verify.tweak 2>/dev/null || true
+    [ -s payload/.work/verify.tweak ] || { echo absent; return; }
+    tf_got=$(shasum -a 256 payload/.work/verify.tweak | awk '{print $1}')
+
+    # Content alone is not enough: these reads run as root over ssh, so cat of a
+    # mode-000 loader returns the right bytes while dlopen from every ordinary
+    # process fails. Compared symbolically because `ls -ln` is what this ramdisk
+    # can be relied on to produce; see marker_state above for why not stat(1).
+    # GNU ls appends '.' or '+' for an ACL, so a trailing one is dropped.
+    tf_ls=$(sh_dev "ls -ln '$tweak_dst'" | tr -d '\r')
+    tf_mode=$(printf '%s\n' "$tf_ls" | awk '{print $1}')
+    tf_mode=${tf_mode%[.+]}
+    tf_uid=$(printf '%s\n' "$tf_ls" | awk '{print $3}')
+    [ "$tf_uid" = 0 ] || { echo "owner uid $tf_uid, not root"; return; }
+
+    # The form provisioning writes. Its mode is ours to require.
+    if [ "$tf_got" = "$(shasum -a 256 "$tweak_src" | awk '{print $1}')" ]; then
+        [ "$tf_mode" = "$(symbolic_mode "$tweak_mode")" ] || echo "mode $tf_mode"
+        return
+    fi
+
+    # The form ElleKit's package leaves behind. Only the three paths carrying a
+    # package form may take it, and the mode is dpkg's to choose, not ours.
+    case "$tweak_pkg" in
+        pkg=*|pkglink=*) ;;
+        *) echo "content"; return ;;
+    esac
+    tf_pkg=$(tweak_pkg_hash "${tweak_pkg#*=}")
+    [ -n "$tf_pkg" ] \
+        || { echo "content, and no ellekit.deb here to compare the package form"; return; }
+    [ "$tf_got" = "$tf_pkg" ] || { echo content; return; }
+    case "$tweak_pkg" in
+        pkglink=*)
+            sh_dev "[ -L '$tweak_dst' ]" >/dev/null 2>&1 \
+                || echo "the package ships a symlink here, found $tf_mode" ;;
+    esac
+}
 mkdir -p payload/.work
 
 note "/Applications bundles"  "$(sh_dev 'ls /mnt1/Applications | wc -l' | tr -d ' \r')"
@@ -1478,32 +1599,12 @@ elif [ "$TWEAK_PAYLOAD" = partial ]; then
 else
     tweak_state=OK
     for entry in $TWEAK_SET; do
-        v_src=${entry%%:*}
-        v_rest=${entry#*:}
-        v_dst=${v_rest%:*}
-        v_mode=${v_rest##*:}
-        sh_dev "cat '$v_dst'" > payload/.work/verify.tweak 2>/dev/null || true
-        if [ ! -s payload/.work/verify.tweak ] || \
-           [ "$(shasum -a 256 payload/.work/verify.tweak | awk '{print $1}')" \
-             != "$(shasum -a 256 "$v_src" | awk '{print $1}')" ]; then
-            tweak_state="MISMATCH /var/jb${v_dst#/mnt2/jb}"
+        tweak_fields "$entry"
+        v_fault=$(tweak_entry_fault "$entry")
+        [ -z "$v_fault" ] || {
+            tweak_state="MISMATCH /var/jb${tweak_dst#/mnt2/jb} ($v_fault)"
             break
-        fi
-        # Content is not enough. These reads run as root over ssh, so a cat of a
-        # mode-000 loader still returns the right bytes, while dlopen from every
-        # ordinary process fails. Checking only the hash called that device OK.
-        #
-        # Compared symbolically because `ls -ln` is what this ramdisk can be
-        # relied on to produce; see marker_state above for why not stat(1). GNU
-        # ls appends '.' or '+' for an ACL, so a trailing one is dropped.
-        v_ls=$(sh_dev "ls -ln '$v_dst'" | tr -d '\r')
-        v_got_mode=$(printf '%s\n' "$v_ls" | awk '{print $1}')
-        v_got_mode=${v_got_mode%[.+]}
-        v_got_uid=$(printf '%s\n' "$v_ls" | awk '{print $3}')
-        if [ "$v_got_mode" != "$(symbolic_mode "$v_mode")" ] || [ "$v_got_uid" != 0 ]; then
-            tweak_state="MISMATCH /var/jb${v_dst#/mnt2/jb} ($v_got_mode uid $v_got_uid)"
-            break
-        fi
+        }
     done
 fi
 note "tweak loader set" "$tweak_state"
