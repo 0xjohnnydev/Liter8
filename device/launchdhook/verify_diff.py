@@ -27,7 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import resign_pagehashes
 import patch_launchd
 
-HOOK_PATH = "/usr/lib/lhook.dylib"
+HOOK_PATH = "/usr/lib/lhook"
 
 
 def changed_ranges(a, b):
@@ -46,12 +46,17 @@ def changed_ranges(a, b):
         yield (start, len(a))
 
 
-def expected_regions(stock, patched):
-    """Build the set of byte ranges we intended to change, from the files themselves."""
+def expected_regions(stock, patched, hook_path=HOOK_PATH):
+    """Build the set of byte ranges we intended to change, from the files themselves.
+
+    hook_path exists so the previous-path image can be verified by the same
+    rules. Recognising that image during provisioning is only defensible if it
+    was checked rather than assumed.
+    """
     ncmds_old, size_old = struct.unpack_from("<II", stock, 16)
     ncmds_new, size_new = struct.unpack_from("<II", patched, 16)
 
-    command = patch_launchd.build_command(HOOK_PATH)
+    command = patch_launchd.build_command(hook_path)
     if ncmds_new != ncmds_old + 1:
         raise SystemExit(f"ncmds is {ncmds_old} -> {ncmds_new}, expected exactly +1")
     if size_new != size_old + len(command):
@@ -62,7 +67,7 @@ def expected_regions(stock, patched):
     if stock[command_start:command_end] != bytes(len(command)):
         raise SystemExit("stock load-command pre-image is not zero padding")
     if patched[command_start:command_end] != command:
-        raise SystemExit(f"appended command is not the exact weak load for {HOOK_PATH}")
+        raise SystemExit(f"appended command is not the exact weak load for {hook_path}")
 
     regions = {
         (16, 20): f"ncmds {ncmds_old} -> {ncmds_new}",
@@ -90,13 +95,14 @@ def expected_regions(stock, patched):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit(f"usage: {sys.argv[0]} <stock> <patched>")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit(f"usage: {sys.argv[0]} <stock> <patched> [hook-path]")
 
     stock = pathlib.Path(sys.argv[1]).read_bytes()
     patched = pathlib.Path(sys.argv[2]).read_bytes()
+    hook_path = sys.argv[3] if len(sys.argv) == 4 else HOOK_PATH
 
-    expected = expected_regions(stock, patched)
+    expected = expected_regions(stock, patched, hook_path)
     actual = list(changed_ranges(stock, patched))
 
     print(f"file size        {len(stock)} both\n")

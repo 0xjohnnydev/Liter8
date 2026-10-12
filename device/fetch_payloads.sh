@@ -267,6 +267,7 @@ if wants injection; then
     cp launchdhook/lhook.dylib "$OUT/lhook.dylib"
     cp launchdhook/systemhook.dylib "$OUT/systemhook.dylib"
     cp launchdhook/sbextissue "$OUT/sbextissue"
+    cp launchdhook/lhookctl "$OUT/lhookctl"
 
     cp "$STOCK" "$WORK/launchd.orig"
     python3 launchdhook/patch_launchd.py "$WORK/launchd.orig" \
@@ -279,8 +280,46 @@ if wants injection; then
     codesign -v "$WORK/launchd.hooked" \
         || die "launchd code-slot verification failed"
 
+    # The same patch against the path this repo used before the hook moved to
+    # /usr/lib/lhook. Nothing installs this image; it exists so provisioning can
+    # recognise a device already hooked by the old build as a known state rather
+    # than refusing to touch an unrecognised launchd. Built from the same
+    # reviewed stock by the same patcher, and byte-diff verified like the real
+    # one, so recognising it is not the same as trusting whatever is on a phone.
+    # Only where the old command could ever have fitted. /usr/lib/lhook.dylib
+    # needs 48 bytes of load-command slack where /usr/lib/lhook needs 40, and a
+    # launchd with only 40 (iPadOS 23H30, the build that shortening the path was
+    # for) can never have carried the old command, so there is no such state to
+    # recognise. Building it unconditionally made patch_launchd.py refuse and
+    # took the whole injection step down with it, publishing no payloads at all
+    # on a board where provisioning would otherwise work.
+    rm -f "$WORK/launchd.hooked-legacy"
+    LEGACY_SLACK=$(python3 launchdhook/patch_launchd.py "$WORK/launchd.orig" \
+        | sed -n 's/^slack  *\([0-9][0-9]*\) bytes$/\1/p')
+    [ -n "$LEGACY_SLACK" ] || die "could not read the launchd load-command slack"
+    if [ "$LEGACY_SLACK" -lt 48 ]; then
+        skip "launchd has $LEGACY_SLACK bytes of slack; the 48-byte previous path never fitted"
+        skip "no legacy recognition image is built, and provisioning does not expect one"
+    else
+    python3 launchdhook/patch_launchd.py "$WORK/launchd.orig" \
+        -o "$WORK/launchd.hooked-legacy" --path /usr/lib/lhook.dylib --apply >/dev/null \
+        || die "could not build the previous-path launchd for recognition"
+    python3 launchdhook/resign_pagehashes.py "$WORK/launchd.hooked-legacy" --apply >/dev/null \
+        || die "could not repair the previous-path launchd page hashes"
+    python3 launchdhook/verify_diff.py "$WORK/launchd.orig" "$WORK/launchd.hooked-legacy" \
+        /usr/lib/lhook.dylib >/dev/null \
+        || die "previous-path launchd byte-diff verification failed"
+    codesign -v "$WORK/launchd.hooked-legacy" \
+        || die "previous-path launchd code-slot verification failed"
+    cmp -s "$WORK/launchd.hooked" "$WORK/launchd.hooked-legacy" \
+        && die "the two hook paths produced identical images; the path change is not in effect"
+    fi
+
     cp "$WORK/launchd.orig" "$OUT/launchd.orig"
     cp "$WORK/launchd.hooked" "$OUT/launchd.hooked"
+    rm -f "$OUT/launchd.hooked-legacy"
+    [ -f "$WORK/launchd.hooked-legacy" ] \
+        && cp "$WORK/launchd.hooked-legacy" "$OUT/launchd.hooked-legacy"
     ok "launchd, lhook, icon sandbox payload and token issuer ready"
 fi
 

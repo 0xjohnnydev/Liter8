@@ -618,24 +618,46 @@ fi
 # --------------------------------------------------------------- injection
 if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     say "launchd injection bootstrap"
+    # launchd.hooked-legacy is deliberately absent on a build whose launchd has
+    # under 48 bytes of load-command slack, because the previous 48-byte hook
+    # path could never have fitted there and so is not a state to recognise.
+    # fetch_payloads.sh skips it on exactly that condition; requiring it here
+    # would move the same abort one stage later.
     for required in payload/launchd.orig payload/launchd.hooked \
-                    payload/lhook.dylib payload/systemhook.dylib payload/sbextissue \
+                    payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl \
                     launchdhook/lhook.deny; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh injection"
     done
 
     stock_sha=$(shasum -a 256 payload/launchd.orig | awk '{print $1}')
     hooked_sha=$(shasum -a 256 payload/launchd.hooked | awk '{print $1}')
+    # An unset legacy hash can never equal a real one, so the recognition case
+    # below simply never fires where no legacy image exists.
+    legacy_sha=
+    [ -f payload/launchd.hooked-legacy ] \
+        && legacy_sha=$(shasum -a 256 payload/launchd.hooked-legacy | awk '{print $1}')
     hook_sha=$(shasum -a 256 payload/lhook.dylib | awk '{print $1}')
     systemhook_sha=$(shasum -a 256 payload/systemhook.dylib | awk '{print $1}')
     sbextissue_sha=$(shasum -a 256 payload/sbextissue | awk '{print $1}')
+    lhookctl_sha=$(shasum -a 256 payload/lhookctl | awk '{print $1}')
     [ "$stock_sha" = "$LAUNCHD_SHA" ] \
         || die "payload/launchd.orig does not match the selected firmware profile"
     python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked >/dev/null \
         || die "launchd payload byte-diff verification failed"
     codesign -v payload/launchd.hooked \
         || die "launchd payload code-slot verification failed"
-    for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue; do
+    # The previous-path image is never installed, only recognised, so it is
+    # verified by the same rules before its hash is allowed to mean anything.
+    if [ -n "$legacy_sha" ]; then
+        python3 launchdhook/verify_diff.py payload/launchd.orig payload/launchd.hooked-legacy \
+            /usr/lib/lhook.dylib >/dev/null \
+            || die "previous-path launchd byte-diff verification failed"
+        codesign -v payload/launchd.hooked-legacy \
+            || die "previous-path launchd code-slot verification failed"
+        [ "$legacy_sha" != "$hooked_sha" ] \
+            || die "the two hook paths hash identically; the path change is not in effect"
+    fi
+    for binary in payload/lhook.dylib payload/systemhook.dylib payload/sbextissue payload/lhookctl; do
         codesign -v "$binary" || die "$binary signature verification failed"
         [ -z "$("$LDID" -e "$binary")" ] \
             || die "$binary unexpectedly carries entitlements"
@@ -651,12 +673,21 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
     sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/launchd.ondevice \
         || die "could not read on-device /sbin/launchd"
     current_sha=$(shasum -a 256 payload/.work/launchd.ondevice | awk '{print $1}')
+    # hooked-legacy is a device this repo hooked before the load command moved
+    # from /usr/lib/lhook.dylib to /usr/lib/lhook. It is an image this script
+    # built and verified above, so it is as known a state as the other two, and
+    # it is replaced the same way. Without this case every device provisioned by
+    # an older revision hit a hard die on its first upgrade, naming no cause and
+    # offering no recovery.
     case "$current_sha" in
         "$stock_sha") current_state=stock ;;
         "$hooked_sha") current_state=hooked ;;
-        *) die "on-device /sbin/launchd is neither reviewed stock nor reviewed hooked ($current_sha)" ;;
+        "$legacy_sha") current_state=hooked-legacy ;;
+        *) die "on-device /sbin/launchd is none of reviewed stock, reviewed hooked or the previous hook path ($current_sha)" ;;
     esac
     ok "on-device launchd is $current_state"
+    [ "$current_state" != hooked-legacy ] \
+        || ok "upgrading from the previous hook path; the inert /usr/lib/lhook.dylib is left in place"
 
     if sh_dev '[ -f /mnt1/sbin/launchd.bak ]'; then
         sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/launchd.bak.ondevice \
@@ -674,11 +705,11 @@ if wants injection && [ "$CHECK_ONLY" = 0 ]; then
         || die "could not make launchd backup executable"
     ok "exact stock backup preserved at /sbin/launchd.bak"
 
-    sh_dev 'mkdir -p /mnt1/usr/lib /mnt1/usr/local/bin /mnt2/jb/etc' \
+    sh_dev 'mkdir -p /mnt1/usr/lib /mnt1/usr/local/bin /mnt2/jb/etc /mnt2/jb/usr/bin' \
         || die "could not create injection directories"
     must_dev '
-if [ -f /mnt1/usr/lib/lhook.dylib ] && [ ! -f /mnt1/usr/lib/lhook.dylib.orig ]; then
-    cp /mnt1/usr/lib/lhook.dylib /mnt1/usr/lib/lhook.dylib.orig
+if [ -f /mnt1/usr/lib/lhook ] && [ ! -f /mnt1/usr/lib/lhook.orig ]; then
+    cp /mnt1/usr/lib/lhook /mnt1/usr/lib/lhook.orig
 fi
 if [ -f /mnt1/usr/lib/systemhook.dylib ] && [ ! -f /mnt1/usr/lib/systemhook.dylib.orig ]; then
     cp /mnt1/usr/lib/systemhook.dylib /mnt1/usr/lib/systemhook.dylib.orig
@@ -692,14 +723,18 @@ fi
 echo DONE_OK
 ' "could not preserve existing injection files"
     put payload/launchd.hooked /mnt1/sbin/launchd.usbl8r-new
-    put payload/lhook.dylib /mnt1/usr/lib/lhook.dylib.usbl8r-new
+    put payload/lhook.dylib /mnt1/usr/lib/lhook.usbl8r-new
     put payload/systemhook.dylib /mnt1/usr/lib/systemhook.dylib.usbl8r-new
     put payload/sbextissue /mnt1/usr/local/bin/sbextissue.usbl8r-new
+    put payload/lhookctl /mnt2/jb/usr/bin/lhookctl.new
     put launchdhook/lhook.deny /mnt2/jb/etc/lhook.deny.new
     sh_dev 'cat /mnt1/sbin/launchd.usbl8r-new' > payload/.work/launchd.staged
-    sh_dev 'cat /mnt1/usr/lib/lhook.dylib.usbl8r-new' > payload/.work/lhook.staged
+    sh_dev 'cat /mnt1/usr/lib/lhook.usbl8r-new' > payload/.work/lhook.staged
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib.usbl8r-new' > payload/.work/systemhook.staged
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue.usbl8r-new' > payload/.work/sbextissue.staged
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl.new' > payload/.work/lhookctl.staged
+    [ "$(shasum -a 256 payload/.work/lhookctl.staged | awk '{print $1}')" = "$lhookctl_sha" ] \
+        || die "staged lhookctl hash mismatch; original is still active"
     [ "$(shasum -a 256 payload/.work/launchd.staged | awk '{print $1}')" = "$hooked_sha" ] \
         || die "staged launchd hash mismatch; original is still active"
     [ "$(shasum -a 256 payload/.work/lhook.staged | awk '{print $1}')" = "$hook_sha" ] \
@@ -709,11 +744,13 @@ echo DONE_OK
     [ "$(shasum -a 256 payload/.work/sbextissue.staged | awk '{print $1}')" = "$sbextissue_sha" ] \
         || die "staged sbextissue hash mismatch; original is still active"
     must_dev '
-chmod 0755 /mnt1/sbin/launchd.usbl8r-new /mnt1/usr/lib/lhook.dylib.usbl8r-new
+chmod 0755 /mnt1/sbin/launchd.usbl8r-new /mnt1/usr/lib/lhook.usbl8r-new
 chmod 0755 /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/local/bin/sbextissue.usbl8r-new
 chmod 0644 /mnt2/jb/etc/lhook.deny.new
+chmod 0755 /mnt2/jb/usr/bin/lhookctl.new
+mv -f /mnt2/jb/usr/bin/lhookctl.new /mnt2/jb/usr/bin/lhookctl
 mv -f /mnt1/sbin/launchd.usbl8r-new /mnt1/sbin/launchd
-mv -f /mnt1/usr/lib/lhook.dylib.usbl8r-new /mnt1/usr/lib/lhook.dylib
+mv -f /mnt1/usr/lib/lhook.usbl8r-new /mnt1/usr/lib/lhook
 mv -f /mnt1/usr/lib/systemhook.dylib.usbl8r-new /mnt1/usr/lib/systemhook.dylib
 mv -f /mnt1/usr/local/bin/sbextissue.usbl8r-new /mnt1/usr/local/bin/sbextissue
 mv -f /mnt2/jb/etc/lhook.deny.new /mnt2/jb/etc/lhook.deny
@@ -725,9 +762,12 @@ echo DONE_OK
 
     sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/launchd.readback
     sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/launchd.bak.readback
-    sh_dev 'cat /mnt1/usr/lib/lhook.dylib' > payload/.work/lhook.readback
+    sh_dev 'cat /mnt1/usr/lib/lhook' > payload/.work/lhook.readback
     sh_dev 'cat /mnt1/usr/lib/systemhook.dylib' > payload/.work/systemhook.readback
     sh_dev 'cat /mnt1/usr/local/bin/sbextissue' > payload/.work/sbextissue.readback
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl' > payload/.work/lhookctl.readback
+    [ "$(shasum -a 256 payload/.work/lhookctl.readback | awk '{print $1}')" = "$lhookctl_sha" ] \
+        || die "lhookctl readback hash mismatch"
     [ "$(shasum -a 256 payload/.work/launchd.readback | awk '{print $1}')" = "$hooked_sha" ] \
         || die "launchd readback hash mismatch"
     [ "$(shasum -a 256 payload/.work/launchd.bak.readback | awk '{print $1}')" = "$stock_sha" ] \
@@ -1221,7 +1261,7 @@ if [ -f payload/launchd.orig ] && [ -f payload/launchd.hooked ] && \
     else
         sh_dev 'cat /mnt1/sbin/launchd' > payload/.work/verify.launchd 2>/dev/null || true
         sh_dev 'cat /mnt1/sbin/launchd.bak' > payload/.work/verify.launchd.bak 2>/dev/null || true
-        sh_dev 'cat /mnt1/usr/lib/lhook.dylib' > payload/.work/verify.lhook 2>/dev/null || true
+        sh_dev 'cat /mnt1/usr/lib/lhook' > payload/.work/verify.lhook 2>/dev/null || true
         sh_dev 'cat /mnt1/usr/lib/systemhook.dylib' > payload/.work/verify.systemhook 2>/dev/null || true
         sh_dev 'cat /mnt1/usr/local/bin/sbextissue' > payload/.work/verify.sbextissue 2>/dev/null || true
         [ -s payload/.work/verify.launchd ] && \
@@ -1234,7 +1274,7 @@ if [ -f payload/launchd.orig ] && [ -f payload/launchd.hooked ] && \
             && injection_backup=OK || injection_backup=MISMATCH
         [ -s payload/.work/verify.lhook ] && \
             [ "$(shasum -a 256 payload/.work/verify.lhook | awk '{print $1}')" = "$verify_lhook" ] && \
-            sh_dev '[ -x /mnt1/usr/lib/lhook.dylib ]' \
+            sh_dev '[ -x /mnt1/usr/lib/lhook ]' \
             && injection_hook=OK || injection_hook=MISMATCH
         [ -s payload/.work/verify.systemhook ] && \
             [ "$(shasum -a 256 payload/.work/verify.systemhook | awk '{print $1}')" = "$verify_systemhook" ] && \
@@ -1258,7 +1298,30 @@ note "lhook.dylib" "$injection_hook"
 note "icon systemhook" "$injection_systemhook"
 note "icon token issuer" "$injection_sbextissue"
 note "lhook deny policy" "$(sh_dev '[ -s /mnt2/jb/etc/lhook.deny ] && ! grep -qx xpcproxy /mnt2/jb/etc/lhook.deny && echo OK || echo MISSING' | tr -d '\r')"
-note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo ENABLED || echo disabled' | tr -d '\r')"
+
+if [ -f payload/lhookctl ]; then
+    verify_lhookctl=$(shasum -a 256 payload/lhookctl | awk '{print $1}')
+    sh_dev 'cat /mnt2/jb/usr/bin/lhookctl' > payload/.work/verify.lhookctl 2>/dev/null || true
+    [ -s payload/.work/verify.lhookctl ] && \
+        [ "$(shasum -a 256 payload/.work/verify.lhookctl | awk '{print $1}')" = "$verify_lhookctl" ] && \
+        sh_dev '[ -x /mnt2/jb/usr/bin/lhookctl ]' \
+        && lhookctl_state=OK || lhookctl_state=MISMATCH
+else
+    lhookctl_state=MISSING
+fi
+# Without the controller the session-bound hook cannot be enabled through the
+# documented interface, so --check reporting the injection setup complete while
+# it is absent is a false pass. The write path hashed it; this is the path that
+# runs on its own.
+note "lhookctl" "$lhookctl_state"
+
+# A marker observed from the ramdisk is stale by construction: it holds the UUID
+# of a boot session that has already ended, and kern.bootsessionuuid is new on
+# every boot, so the guard in lhook_session.h cannot match it. Reporting its
+# presence as ENABLED made `fw provision --check` call a safe device unsafe,
+# because --check runs only mounts and verify and so never reaches the step that
+# moves the marker aside. Report the file, not a verdict the guard contradicts.
+note "lhook first boot" "$(sh_dev '[ -e /mnt2/jb/.lhook_enabled ] && echo "stale marker, guard disables it" || echo disabled' | tr -d '\r')"
 
 # The cache is the one file that can be the right SIZE and still be wrong, and
 # it is what provides SSH on a normal boot. Pull it back and check its contents.

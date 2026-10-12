@@ -41,7 +41,7 @@ verify_deps() {
 for arch in arm64 arm64e; do
     xcrun clang -arch "$arch" -miphoneos-version-min=15.0 \
         -isysroot "$SDK" -dynamiclib -O2 -Wall -Wextra \
-        -Wl,-not_for_dyld_shared_cache -install_name /usr/lib/lhook.dylib \
+        -Wl,-not_for_dyld_shared_cache -install_name /usr/lib/lhook \
         -o "$BASE/lhook_$arch.dylib" "$BASE/lhook.c"
 done
 
@@ -59,7 +59,7 @@ strings -a "$OUT" | grep -q '^/var/jb/usr/lib/TweakLoader.dylib$' \
     || { echo "[!] TweakLoader payload path missing" >&2; exit 1; }
 [ -z "$("$LDID" -e "$OUT")" ] \
     || { echo "[!] lhook unexpectedly carries entitlements" >&2; exit 1; }
-verify_deps "$OUT" lhook "/usr/lib/lhook.dylib
+verify_deps "$OUT" lhook "/usr/lib/lhook
 /usr/lib/libSystem.B.dylib"
 
 echo "[+] $OUT ($archs, $interpose interpose section)"
@@ -90,6 +90,7 @@ build_universal() {
 
 build_universal systemhook.dylib systemhook_icon.c dylib
 build_universal sbextissue sbextissue.c executable
+build_universal lhookctl lhookctl.c executable
 
 verify_deps "$BASE/systemhook.dylib" systemhook "/usr/lib/systemhook.dylib
 /usr/lib/libSystem.B.dylib"
