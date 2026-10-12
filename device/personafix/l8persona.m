@@ -150,6 +150,16 @@ static NSString *string_property(id object, const char *name) {
  * meant any request at all got rewritten, because on this hardware the second
  * half of that condition is permanently true. Rejections are logged, so a build
  * that changes these values shows up as lost fallbacks rather than silence. */
+/* A method's type encoding with the frame offsets stripped, leaving the type
+ * letters the casts actually depend on. Same helper as l8localauth. */
+static void encoding_letters(const char *encoding, char *out, size_t size) {
+    size_t n = 0;
+    for (const char *p = encoding; p != NULL && *p != '\0' && n + 1 < size; p++) {
+        if (*p < '0' || *p > '9') out[n++] = *p;
+    }
+    out[n] = '\0';
+}
+
 static BOOL persona_is_substitutable(NSString *named, NSString *primary) {
     if (![named isKindOfClass:[NSString class]]) return NO;
     if ([named isEqualToString:@L8_PERSONA_PLACEHOLDER]) return YES;
@@ -216,15 +226,24 @@ static BOOL l8_resolve(id self, SEL sel, NSError **error) {
         if (error) *error = native;
         return ok;
     }
-    ((void (*)(id, SEL, id))objc_msgSend)(self, setPersona, persona);
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setResolved, YES);
-    if (error) *error = nil;
-    /* [self description] used to stand in for the identity here, but
+    /* Logged before the mutation, because every value it prints is known by
+     * now and one of them does not survive it. personaUniqueString is
+     * `T@"NSString",&,N` (measured): retain and nonatomic, so its getter hands
+     * back the ivar at +0 with no autorelease, and this dylib is not ARC. The
+     * setter below releases the old value, which with no other owner frees the
+     * string named_after still points at. It has not bitten because both
+     * observed values are immortal constants; reordering removes the dangling
+     * reference outright, where retaining it would only paper over it.
+     *
+     * [self description] used to stand in for the identity here, but
      * MIAppIdentity defines no description and NSObject's prints the address
      * only, so the log could not answer what the identity actually named. */
     os_log_error(OS_LOG_DEFAULT, "l8persona: fallback bundle=%{public}@ named-before=%{public}@ "
                  "named-after=%{public}@ resolved-to=%{public}@ stock-error=%{public}@",
                  bundle, named_before, named_after, persona, native.localizedDescription);
+    ((void (*)(id, SEL, id))objc_msgSend)(self, setPersona, persona);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setResolved, YES);
+    if (error) *error = nil;
     return YES;
 }
 
@@ -240,6 +259,20 @@ static void install_if_ready(void) {
     Method method = class_getInstanceMethod(cls, sel_registerName("resolvePersonaWithError:"));
     if (method == NULL || method_getNumberOfArguments(method) != 3) {
         os_log_error(OS_LOG_DEFAULT, "l8persona: resolvePersonaWithError: not found (pid %d)", getpid());
+        return;
+    }
+    /* Types, not just arity, the same guard l8localauth applies. This is a
+     * private selector, and one that kept three arguments while changing its
+     * return or out-parameter ABI would be called through ResolveIMP anyway,
+     * corrupting ordinary installd calls rather than just disabling the
+     * fallback: the swizzle goes in whether or not the marker is armed.
+     *
+     * B@:^@ read from the live runtime on n104/24B5099f. */
+    char letters[64];
+    encoding_letters(method_getTypeEncoding(method), letters, sizeof letters);
+    if (strcmp(letters, "B@:^@") != 0) {
+        os_log_error(OS_LOG_DEFAULT, "l8persona: resolvePersonaWithError: encoding is "
+                     "%{public}s, expected B@:^@; not hooked (pid %d)", letters, getpid());
         return;
     }
     gOriginalResolve = (ResolveIMP)method_getImplementation(method);

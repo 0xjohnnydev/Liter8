@@ -403,6 +403,11 @@ else
     EK_GOT_SHA=$(shasum -a 256 "$EK_DEB" | awk '{print $1}')
     [[ "$EK_GOT_SHA" == "$ELLEKIT_SHA" ]] \
         || die "$EK_DEB does not match the pinned digest; refusing to install. got $EK_GOT_SHA"
+    # Unlinked first, for the reason the tweak staging paths are: tee follows a
+    # symlink already sitting there and would overwrite its target as root, and
+    # the readback below follows the same link so the digest check would agree.
+    sh_dev "$RPATH; rm -f /var/root/ellekit.deb" >/dev/null \
+        || die "could not clear the staging path on the device"
     sh_dev "$RPATH; tee /var/root/ellekit.deb >/dev/null" < "$EK_DEB" \
         || die "could not copy $EK_DEB to the device"
     # Hash the readback here, not on the device: shasum is not part of the
