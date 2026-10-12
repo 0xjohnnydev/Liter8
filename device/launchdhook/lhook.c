@@ -359,7 +359,12 @@ static int make_child_env(char *const input[], int inject, struct child_env *out
         out->insert = NULL; free(libraries); return ENOMEM;
     }
     free(libraries);
-    if (inject) {
+    /* Only where there is a loader to dlopen. The icon payload inserted above
+     * needs none of this, so on a device carrying it and no ElleKit the child
+     * gets the interposer and the icon hook with no rootless extensions at all.
+     * The strip below drops any inherited tokens in that case, rather than
+     * passing on a grant this spawn would not have minted. */
+    if (inject && file_exists(kLoader)) {
         /* A sandboxed descendant may be unable to issue a new extension. The
          * inherited bearer remains valid for this boot and this directory. */
         issue_file_fn issue = (issue_file_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_issue_file");
@@ -437,6 +442,19 @@ DYLD_INTERPOSE(my_posix_spawnp, posix_spawnp)
  * A failure leaves the host running without tweaks; it never aborts launch. */
 int liter8_load_tweaks(void) {
     if (getpid() == 1) return 0;
+    /* Decide before consuming anything. These extensions exist only so the
+     * loader and its tweaks can be dlopened out of /var/jb, so a process that
+     * is not going to do that has no business holding them. Consuming first
+     * meant every injected process on a device with no loader took read and
+     * file-map-executable on the whole rootless tree while only the icon hook
+     * was doing anything, and the same for a denied process or one spawned into
+     * a session that is no longer armed.
+     *
+     * The icon payload is unaffected: it lives on the System volume and takes
+     * its own token out of sbextissue's mailbox rather than from these
+     * variables, which is why it is inserted directly instead of loaded here. */
+    if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
+    if (!file_exists(kLoader)) return 0;
     /* Read is required: without it nothing under /var/jb is visible. The
      * executable grant only matters to processes whose profile checks
      * file-map-executable, so its failure is logged and loading continues. */
@@ -454,8 +472,6 @@ int liter8_load_tweaks(void) {
                      kGrants[g].cls, getpid());
         if (g == 0) return -1;
     }
-    if (!lhook_session_enabled() || !strcmp(getprogname(), "xpcproxy") || denied(getprogname())) return 0;
-    if (!file_exists(kLoader)) return 0;
     /* Loading the loader here, from the constructor, rather than inserting it.
      *
      * The fork this port comes from records the opposite, at its own lhook.c:97:
