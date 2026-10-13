@@ -138,6 +138,8 @@ pwn DFU again.
 .build/release/liter8 fw boot
 ```
 
+`fw get-boot` builds TXM with its code-signing policy flags turned on (any signature, unrestricted local signing, relaxed profile trust, CS enforcement disabled, unrestricted task_for_pid) plus the patches C function hooks need. CoreTrust stays enforced. The boot manifest records it as `txmPlan: boot-permissive`.
+
 ### 7. Finish the bootstrap
 
 Wait until you can SSH into the booted OS, then:

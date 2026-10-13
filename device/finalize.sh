@@ -461,10 +461,12 @@ else
     ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 
-# Theos signs tweaks with ldid's default flags=0x0, and SpringBoard silently
-# refuses those on this device (tweaksign/tweaksign.sh has the measurement). dpkg
-# runs the re-signer after every run that changes packages, so repo tweaks load
-# without rebuilding; this installs it and runs it once for what is already there.
+# Theos signs tweaks with ldid's default flags=0x0, and SpringBoard once silently
+# refused those on this device (tweaksign/tweaksign.sh has the measurement). A
+# later test on the same build loaded a plain Theos flags=0x0 build without it, and
+# the cause of the refusal is unknown, so this stays as a safety net. dpkg runs the
+# re-signer after every run that changes packages, so repo tweaks load without
+# rebuilding; this installs it and runs it once for what is already there.
 #
 # Installed as liter8-tweaksign with no extension: dpkg ignores any file in
 # dpkg.cfg.d whose name contains a dot, which is also why a .new staging copy

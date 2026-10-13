@@ -5,8 +5,9 @@ configures and PreferenceLoader panes render.
 
 ObjC hooks (`%hook`) and C function hooks (`MSHookFunction`, `%hookf`, `EKHook`)
 both work. Stock TXM refuses to let a patched code page execute again; every boot
-`fw get-boot` builds carries TXM that allows it. Device-tested on iPhone 11
-(n104ap) 24B5099f only. No other build has been boot-tested with a C hook.
+`fw get-boot` builds carries TXM that allows it, with TXM's code-signing policy
+flags on (CoreTrust stays enforced). Device-tested on iPhone 11 (n104ap) 24B5099f
+only. No other build has been boot-tested with a C hook.
 
 | works | doesn't |
 |---|---|
@@ -18,10 +19,11 @@ Tiny functions: ElleKit needs 4 instructions before the target's first `ret` or
 `b` to fit its jump. Shorter ones (`mov ; ret`, one-line wrappers) get a jump that
 cannot reach the tweak, and the host crashes.
 
-Signing: Theos signs tweaks `flags=0x0`, which SpringBoard silently refuses to
-load here. `fw finalize` installs a dpkg hook that re-signs TweakInject dylibs
-ad-hoc after every install, so repo tweaks work as-is. Your own Theos builds can
-skip that with `<TweakName>_CODESIGN_FLAGS = -S -Cadhoc` in the Makefile.
+Signing: Theos signs tweaks `flags=0x0`. SpringBoard once silently refused those
+here, but a later test on the same build loaded a plain Theos build fine, and why
+it was refused is still unknown. `fw finalize` installs a dpkg hook that re-signs
+TweakInject dylibs ad-hoc after every install anyway, so repo tweaks work as-is.
+Your own Theos builds can do the same with `<TweakName>_CODESIGN_FLAGS = -S -Cadhoc`.
 
 Two of the shipped tweaks sit dormant until their marker exists:
 

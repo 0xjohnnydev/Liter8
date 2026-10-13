@@ -1157,18 +1157,19 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
     def test_normal_boot_manifest_records_the_txm_plan(self):
-        # boot-debug relaxes code signing for every process, so a boot set has
-        # to say which TXM it carries, and the extra key must not break fw boot.
+        # boot-permissive relaxes code signing for every process, so a boot set
+        # has to say which TXM it carries, and the extra key must not break
+        # fw boot.
         fixture_context = self.make_boot_set(
-            "normal", kernel_plan="boot-jit", txm_plan="boot-debug"
+            "normal", kernel_plan="boot-jit", txm_plan="boot-permissive"
         )
         manifest = json.loads((self.work / "Ramdisk/liter8-boot.json").read_text())
-        self.assertEqual(manifest["txmPlan"], "boot-debug")
+        self.assertEqual(manifest["txmPlan"], "boot-permissive")
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
     def test_normal_boot_is_built_for_function_hooks(self):
         # No switch: every normal boot carries both code-signing relaxations.
-        self.assertEqual(normal_boot_plans(patch_txm=True), ("boot-jit", "boot-debug"))
+        self.assertEqual(normal_boot_plans(patch_txm=True), ("boot-jit", "boot-permissive"))
 
     def test_no_txm_plan_without_txm_in_the_identity(self):
         # j171aap has no SPTM/TXM: only the kernel half applies there.
