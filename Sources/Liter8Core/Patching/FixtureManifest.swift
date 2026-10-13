@@ -157,6 +157,10 @@ public struct FixtureManifest: Codable, Sendable {
             return try TXMDebugMappingResolver().resolve(in: image)
         case TXMBootDebugResolver.name:
             return try TXMBootDebugResolver().resolve(in: image)
+        case TXMPermissiveFlagsResolver.name:
+            return try TXMPermissiveFlagsResolver().resolve(in: image)
+        case TXMBootPermissiveResolver.name:
+            return try TXMBootPermissiveResolver().resolve(in: image)
         case CoreAuthDResolver.name:
             return try CoreAuthDResolver().resolve(in: image)
         case CTKDResolver.name:

@@ -66,6 +66,8 @@ let resolverGroups: [String: [String: String]] = [
         "boot": TXMBootResolver.name,
         "debug-mapping": TXMDebugMappingResolver.name,
         "boot-debug": TXMBootDebugResolver.name,
+        "permissive-flags": TXMPermissiveFlagsResolver.name,
+        "boot-permissive": TXMBootPermissiveResolver.name,
     ],
     "userland": [
         "restored-fdr": RestoredExternalResolver.name,
@@ -182,6 +184,12 @@ func resolveRecords(
     case TXMBootDebugResolver.name:
         try options.requireNoTuning(resolver: name)
         return try TXMBootDebugResolver().resolve(in: image)
+    case TXMPermissiveFlagsResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try TXMPermissiveFlagsResolver().resolve(in: image)
+    case TXMBootPermissiveResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try TXMBootPermissiveResolver().resolve(in: image)
     case CoreAuthDResolver.name:
         try options.requireNoTuning(resolver: name)
         return try CoreAuthDResolver().resolve(in: image)

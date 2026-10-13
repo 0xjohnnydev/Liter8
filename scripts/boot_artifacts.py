@@ -92,16 +92,16 @@ def has_txm(components: dict[str, str], mode: str) -> bool:
 def normal_boot_plans(*, patch_txm: bool) -> tuple[str, str | None]:
     """Kernel and TXM plans for a normal boot, as (kernel_plan, txm_plan).
 
-    Every normal boot is built for runtime function hooks, by operator
-    decision; there is no switch. Both plans weaken code signing for every
-    process, and each covers one code-signing monitor and is inert where that
-    monitor is absent: kernel boot-jit carries the PPL patches (only a kernel
-    profile that opts in gets any) and clears the exception-port behavior
-    enforcement byte, and txm
-    boot-debug lets TXM approve the debug mapping a modified code page needs
-    before it can execute again. No TXM in the identity means no TXM plan.
+    Every normal boot is built for runtime function hooks with TXM's policy
+    flags on, by operator decision; there is no switch. Both plans weaken code
+    signing for every process, and each covers one code-signing monitor and is
+    inert where that monitor is absent: kernel boot-jit carries the PPL patches
+    (only a kernel profile that opts in gets any) and clears the exception-port
+    behavior enforcement byte, and txm boot-permissive turns on the policy flags
+    and lets TXM approve the debug mapping a modified code page needs before it
+    can execute again. No TXM in the identity means no TXM plan.
     """
-    return "boot-jit", "boot-debug" if patch_txm else None
+    return "boot-jit", "boot-permissive" if patch_txm else None
 
 
 def ticket_from_environment() -> Path:
@@ -177,8 +177,9 @@ def write_boot_manifest(
     }
     if kernel_plan is not None:
         document["kernelPlan"] = kernel_plan
-    # Recorded for the same reason as the kernel plan: boot-debug relaxes code
-    # signing for every process, so which TXM a boot set carries must be visible.
+    # Recorded for the same reason as the kernel plan: boot-permissive relaxes
+    # code signing for every process, so which TXM a boot set carries must be
+    # visible.
     if txm_plan is not None:
         document["txmPlan"] = txm_plan
     (staging / "liter8-boot.json").write_text(
