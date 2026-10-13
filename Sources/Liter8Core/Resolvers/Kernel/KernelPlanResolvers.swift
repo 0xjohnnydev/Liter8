@@ -71,8 +71,12 @@ public struct KernelBootCompatibilityResolver: Sendable {
 /// separate because those patches weaken the code-signing guarantee for every
 /// process, so a boot opts into them explicitly rather than getting them in the
 /// reviewed default. The extra records resolve only on a kernel profile that
-/// registers the `kernel-codesign-invalid` variant; on any other kernel the
-/// composed plan equals `boot-public`.
+/// registers the `kernel-codesign-invalid` variant; on any other kernel those
+/// add nothing.
+///
+/// It also clears the exception-port behavior enforcement byte, because the
+/// trust-cache patches make every app a platform binary and platform binaries
+/// are killed for registering `EXCEPTION_DEFAULT` handlers, which crash SDKs do.
 public struct KernelBootJITResolver: Sendable {
     public static let name = "kernel-boot-jit"
     public init() {}
@@ -80,6 +84,7 @@ public struct KernelBootJITResolver: Sendable {
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
         try KernelBootCompatibilityResolver().resolve(in: image)
             + KernelCodeSigningResolver.requiredRecords(in: image)
+            + KernelExceptionPortResolver().resolve(in: image)
     }
 }
 

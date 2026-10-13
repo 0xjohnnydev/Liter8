@@ -96,7 +96,8 @@ def normal_boot_plans(*, patch_txm: bool) -> tuple[str, str | None]:
     decision; there is no switch. Both plans weaken code signing for every
     process, and each covers one code-signing monitor and is inert where that
     monitor is absent: kernel boot-jit carries the PPL patches (only a kernel
-    profile that opts in gets any, so on n104 it equals boot-public), and txm
+    profile that opts in gets any) and clears the exception-port behavior
+    enforcement byte, and txm
     boot-debug lets TXM approve the debug mapping a modified code page needs
     before it can execute again. No TXM in the identity means no TXM plan.
     """

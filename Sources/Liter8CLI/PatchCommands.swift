@@ -24,8 +24,8 @@ COMPONENTS AND PLANS:
               ibec-ignore-pinot-failure, ibec-force-pinot-id
   kernel      restore, ppl-trust-cache, boot-policy, aks, sep-silence, sep,
               credential-manager, sandbox, sandbox-public, ppl-allow-invalid,
-              vm-fault-cs-bypass, vm-map-protect, valeria, boot, boot-public,
-              boot-jit, diagnostic
+              vm-fault-cs-bypass, vm-map-protect, valeria, exception-port, boot,
+              boot-public, boot-jit, diagnostic
   txm         restore, boot, debug-mapping, boot-debug
   userland    restored-fdr, asr, coreauthd, ctkd, mobileactivationd, commcenter
   devicetree  restore, normal

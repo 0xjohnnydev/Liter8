@@ -53,6 +53,7 @@ let resolverGroups: [String: [String: String]] = [
         "vm-fault-cs-bypass": KernelVMFaultCSBypassResolver.name,
         "vm-map-protect": KernelVMMapProtectResolver.name,
         "valeria": KernelValeriaResolver.name,
+        "exception-port": KernelExceptionPortResolver.name,
         "boot": KernelBootResolver.name,
         "boot-jit": KernelBootJITResolver.name,
         // Keep the public CLI spelling stable while the Swift type describes
@@ -246,6 +247,9 @@ func resolveRecords(
     case KernelValeriaResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelValeriaResolver().resolve(in: image)
+    case KernelExceptionPortResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try KernelExceptionPortResolver().resolve(in: image)
     case KernelBootResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootResolver().resolve(in: image)
