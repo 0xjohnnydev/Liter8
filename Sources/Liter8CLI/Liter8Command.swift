@@ -24,6 +24,8 @@ struct Liter8: ParsableCommand {
         binary in front of it. Run `liter8 fw actions` for the device workflow, or \
         `liter8 <command> --help` for anything below.
         """,
+        // Bump before tagging; the tag is v<version>.
+        version: "0.1.0",
         subcommands: [
             Firmware.self,
             Resolve.self,
