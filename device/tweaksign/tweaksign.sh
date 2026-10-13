@@ -40,6 +40,11 @@ needs_signing() {
     printf '%s\n' "$slices" | grep -qv 'adhoc'
 }
 
+# The CodeDirectory identifier, or nothing for an unsigned file.
+identifier_of() {
+    ldid -h "$1" 2>/dev/null | sed -n 's/^Identifier=//p' | sed -n '1p'
+}
+
 for dylib in "$DIR"/*.dylib; do
     [ -f "$dylib" ] && [ ! -L "$dylib" ] || continue
     needs_signing "$dylib" || continue
@@ -55,19 +60,23 @@ for dylib in "$DIR"/*.dylib; do
     rm -f "$tmp" "$tmp.xml"
     cp -p "$dylib" "$tmp" || { echo "liter8 tweaksign: could not copy $name" >&2; continue; }
 
-    # Keep any entitlements; ldid -S without a file would drop them.
+    # Keep the identity it was signed with: the identifier, which a designated
+    # requirement can name, and any entitlements, which ldid -S without a file
+    # would drop. Only an unsigned file takes its name as the identifier.
+    ident=$(identifier_of "$dylib")
+    [ -n "$ident" ] || ident=$name
     ents=$(ldid -e "$dylib" 2>/dev/null)
     if [ -n "$ents" ]; then
         printf '%s\n' "$ents" > "$tmp.xml"
-        ldid -S"$tmp.xml" -Cadhoc -I"$name" "$tmp"
+        ldid -S"$tmp.xml" -Cadhoc -I"$ident" "$tmp"
         rc=$?
         rm -f "$tmp.xml"
     else
-        ldid -S -Cadhoc -I"$name" "$tmp"
+        ldid -S -Cadhoc -I"$ident" "$tmp"
         rc=$?
     fi
 
-    if [ "$rc" -ne 0 ] || needs_signing "$tmp"; then
+    if [ "$rc" -ne 0 ] || needs_signing "$tmp" || [ "$(identifier_of "$tmp")" != "$ident" ]; then
         echo "liter8 tweaksign: could not re-sign $name, left as it was" >&2
         rm -f "$tmp"
         continue

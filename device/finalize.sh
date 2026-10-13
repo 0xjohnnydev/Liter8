@@ -475,11 +475,18 @@ TS_CFG=/var/jb/etc/dpkg/dpkg.cfg.d/liter8-tweaksign
 TS_SCRIPT_SHA=$(shasum -a 256 tweaksign/tweaksign.sh | cut -d' ' -f1)
 TS_CFG_SHA=$(shasum -a 256 tweaksign/liter8-tweaksign.cfg | cut -d' ' -f1)
 
+# Content, and the owner and exact mode: dpkg runs the script as root on every
+# install, and a third-party package has already loosened a directory's mode on
+# this device, so a correct hash in a file another account can rewrite is not an
+# installed hook. Modes come from ls -ln, the reliable reader here; a trailing
+# ACL marker is dropped.
 ts_installed() {
     local got
     got=$(sh_dev "$RPATH
-        [ -x $TS_SCRIPT ] && [ ! -L $TS_SCRIPT ] && [ -f $TS_CFG ] && [ ! -L $TS_CFG ] &&
-            sha256sum $TS_SCRIPT $TS_CFG" < /dev/null 2>/dev/null | tr -d '\r') || return 1
+        [ -f $TS_SCRIPT ] && [ ! -L $TS_SCRIPT ] && [ -f $TS_CFG ] && [ ! -L $TS_CFG ] || exit 1
+        set -- \$(ls -ln $TS_SCRIPT); [ \"\${1%[.+]}\" = -rwxr-xr-x ] && [ \"\$3\" = 0 ] || exit 1
+        set -- \$(ls -ln $TS_CFG); [ \"\${1%[.+]}\" = -rw-r--r-- ] && [ \"\$3\" = 0 ] || exit 1
+        sha256sum $TS_SCRIPT $TS_CFG" < /dev/null 2>/dev/null) || return 1
     [[ "$got" == *"$TS_SCRIPT_SHA"* && "$got" == *"$TS_CFG_SHA"* ]]
 }
 
@@ -496,7 +503,7 @@ ts_pending() {
 if ts_installed; then
     skip "re-sign hook already installed"
 elif (( CHECK_ONLY )); then
-    skip "PENDING: the dpkg re-sign hook is not installed or differs from this tree"
+    skip "PENDING: the dpkg re-sign hook is missing, differs from this tree, or is not root-owned 0755/0644"
     FINALIZE_INCOMPLETE=1
 else
     sh_dev "$RPATH; mkdir -p ${TS_SCRIPT:h} && rm -f $TS_SCRIPT.new &&
@@ -509,9 +516,21 @@ else
     ok "dpkg re-signs TweakInject dylibs ad-hoc after every package change"
 fi
 
-if ! TS_LIST=$(ts_pending); then
-    (( CHECK_ONLY )) || die "could not check TweakInject signatures; is ldid in the bootstrap?"
-    skip "INCOMPLETE: could not check TweakInject signatures; is ldid in the bootstrap?"
+# The bundled bootstrap has no ldid; it arrives with apt, for instance as a
+# Sileo dependency. Its absence is not a finalize failure: tweaks are optional,
+# and the dpkg run that installs ldid triggers the hook, which signs whatever is
+# waiting. Asked as a yes/no so a dropped connection is not read as "absent".
+TS_LDID=$(sh_dev "$RPATH; command -v ldid >/dev/null && echo HAVE_LDID || echo NO_LDID" \
+    < /dev/null 2>/dev/null) || true
+if [[ "$TS_LDID" == *NO_LDID* ]]; then
+    skip "ldid is not installed yet; the hook re-signs tweaks once apt installs it (apt install ldid)"
+elif [[ "$TS_LDID" != *HAVE_LDID* ]]; then
+    (( CHECK_ONLY )) || die "could not ask the device whether ldid is installed"
+    skip "INCOMPLETE: could not ask the device whether ldid is installed"
+    FINALIZE_INCOMPLETE=1
+elif ! TS_LIST=$(ts_pending); then
+    (( CHECK_ONLY )) || die "could not check TweakInject signatures"
+    skip "INCOMPLETE: could not check TweakInject signatures"
     FINALIZE_INCOMPLETE=1
 else
     TS_PENDING=(${(f)TS_LIST})
