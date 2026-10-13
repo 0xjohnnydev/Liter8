@@ -155,6 +155,9 @@ ok "device package lists updated"
 # and `libkrw0` wants a libkrw0-plugin. apt then refuses every install below with
 # "Unmet dependencies". Repair them here, where the network is known to work; it
 # is what `apt --fix-broken install` did by hand on the devices that hit this.
+# --no-remove: a repair is only allowed to install. If apt's plan would remove
+# a package (one of the user's, or a bootstrap one whose dependency vanished),
+# it aborts instead of -y silently accepting the removal.
 say "checking apt dependencies"
 if sh_dev "$RPATH; apt-get check" >/dev/null 2>&1; then
     ok "no broken dependencies"
@@ -162,11 +165,11 @@ elif (( CHECK_ONLY )); then
     skip "broken dependencies; a normal run repairs them with apt --fix-broken install"
 else
     sh_dev "$RPATH
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-broken > /tmp/.liter8-apt.log 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove --fix-broken > /tmp/.liter8-apt.log 2>&1
         rc=\$?
         tail -8 /tmp/.liter8-apt.log
         rm -f /tmp/.liter8-apt.log
-        exit \$rc" || die "apt --fix-broken install failed"
+        exit \$rc" || die "apt could not repair dependencies without removing packages; run 'apt --fix-broken install' on the device and review what it removes"
     sh_dev "$RPATH; apt-get check" >/dev/null 2>&1 \
         || die "dependencies are still broken after apt --fix-broken install"
     ok "broken dependencies repaired"
