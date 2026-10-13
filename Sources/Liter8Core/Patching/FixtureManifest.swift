@@ -199,6 +199,8 @@ public struct FixtureManifest: Codable, Sendable {
             return try KernelVMMapProtectResolver().resolve(in: image)
         case KernelValeriaResolver.name:
             return try KernelValeriaResolver().resolve(in: image)
+        case KernelExceptionPortResolver.name:
+            return try KernelExceptionPortResolver().resolve(in: image)
         case KernelBootResolver.name:
             return try KernelBootResolver().resolve(in: image)
         case KernelBootCompatibilityResolver.name:
