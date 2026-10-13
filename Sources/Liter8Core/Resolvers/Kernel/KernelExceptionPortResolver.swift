@@ -147,27 +147,28 @@ public struct KernelExceptionPortResolver: Sendable {
         let guardEdge = isTBNZ ? target : testSite + 4
         let bypassEdge = isTBNZ ? testSite + 4 : target
         guard guardCall >= guardEdge, guardCall - guardEdge <= 8 else { return false }
-        return try bypassDeniesFromByte(from: bypassEdge, register: load.rt, guardCall: guardCall, image: image)
+        // The guard path: from the guarded edge through MOV W2,#6 and its BL.
+        let guardPath = guardEdge..<(guardCall + 8)
+        return try bypassDeniesFromByte(from: bypassEdge, register: load.rt, guardPath: guardPath, image: image)
     }
 
-    /// Straight-line walk of at most eight words from `start`.
+    /// Straight-line walk of at most eight words from `start`, ending at a `B`
+    /// whose target returns.
     private func bypassDeniesFromByte(
         from start: UInt64,
         register: UInt32,
-        guardCall: UInt64,
+        guardPath: Range<UInt64>,
         image: BinaryImage
     ) throws -> Bool {
         var derived = false
         var cursor = start
         for _ in 0..<8 {
-            guard cursor != guardCall else { return false }
+            guard !guardPath.contains(cursor) else { return false }
             let word = try image.readUInt32(at: cursor)
-            // B (unconditional): the path leaves; it must not land on the guard.
+            // B (unconditional): the path leaves, and must leave the function.
             if word & 0xFC00_0000 == 0x1400_0000 {
-                guard let target = ARM64.directBranchTarget(instruction: word, at: cursor),
-                      !(target <= guardCall && guardCall - target <= 8)
-                else { return false }
-                return derived
+                guard let target = ARM64.directBranchTarget(instruction: word, at: cursor) else { return false }
+                return try derived && returns(from: target, avoiding: guardPath, image: image)
             }
             // SBFX Wd,Wn,#0,#1 is SBFM Wd,Wn,#0,#0: 0x13000000 | Rn<<5 | Rd.
             if !derived, word & 0xFFFF_FC00 == 0x1300_0000, (word >> 5) & 0x1F == register {
@@ -190,6 +191,28 @@ public struct KernelExceptionPortResolver: Sendable {
             // breaks the data flow. Branches that only test registers are fine.
             let isTestBranch = word & 0x7E00_0000 == 0x3400_0000 || word & 0x7E00_0000 == 0x3600_0000
             if !derived, !isTestBranch, word & 0x1F == register { return false }
+            cursor += 4
+        }
+        return false
+    }
+
+    /// The exit target is the function epilogue: straight-line code (register
+    /// restores, AUTIBSP) reaching RET/RETAA/RETAB within twelve words, with no
+    /// branch and nothing inside the guard path. A self-branch or a jump into
+    /// the guard's BL fails here.
+    private func returns(from start: UInt64, avoiding guardPath: Range<UInt64>, image: BinaryImage) throws -> Bool {
+        var cursor = start
+        for _ in 0..<12 {
+            guard !guardPath.contains(cursor) else { return false }
+            let word = try image.readUInt32(at: cursor)
+            if ARM64.isReturn(word) { return true }
+            // Any other branch: B/BL (0x14/0x94), B.cond (0x54, bit 4 clear),
+            // CBZ/CBNZ/TBZ/TBNZ (0x34-0x37), and register branches (0xD6).
+            let isBranch = word & 0x7C00_0000 == 0x1400_0000
+                || word & 0xFF00_0010 == 0x5400_0000
+                || word & 0x7C00_0000 == 0x3400_0000
+                || word & 0xFE00_0000 == 0xD600_0000
+            if isBranch { return false }
             cursor += 4
         }
         return false

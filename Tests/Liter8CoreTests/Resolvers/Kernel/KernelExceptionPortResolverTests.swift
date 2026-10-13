@@ -100,6 +100,22 @@ final class KernelExceptionPortResolverTests: XCTestCase {
         }
     }
 
+    /// The exit branch aimed at the guard's BL itself (B +0x10 to 0x3226128).
+    func testRejectsWhenTheBypassExitTargetsTheGuardBL() throws {
+        let image = try mutatedBeta4(words: [0x3226118: 0x1400_0004])
+        assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
+    /// The exit branch looping on itself never reaches the epilogue.
+    func testRejectsWhenTheBypassExitIsASelfBranch() throws {
+        let image = try mutatedBeta4(words: [0x3226118: 0x1400_0000])
+        assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
     private func mutatedBeta4(words: [UInt64: UInt32] = [:], bytes: [UInt64: UInt8] = [:]) throws -> BinaryImage {
         var data = try Data(contentsOf: beta4)
         for (offset, word) in words {
