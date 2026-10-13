@@ -197,6 +197,17 @@ final class TXMResolverTests: XCTestCase {
         }
     }
 
+    /// A block that loads, extracts and stores the profile bit through W0 is
+    /// otherwise consistent, but the LDRB would overwrite the patched all-ones
+    /// X0 before the W0 stores run: LDRB W0,[X20,#0x2CC] / UBFX W0,W0,#1,#1 /
+    /// STRB W0,[X20,#0x21E].
+    func testPermissiveFlagsRejectsW0AsTheLoadRegister() throws {
+        let image = try mutatedBeta4([0x2C358: 0x394B_3280, 0x2C36C: 0x5301_0400, 0x2C370: 0x3908_7A80])
+        assertThrows(try TXMPermissiveFlagsResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
     private func mutatedBeta4(_ words: [UInt64: UInt32]) throws -> BinaryImage {
         var data = try Data(contentsOf: beta4TXM)
         for (offset, word) in words {

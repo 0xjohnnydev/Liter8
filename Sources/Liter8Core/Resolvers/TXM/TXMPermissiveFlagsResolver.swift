@@ -139,7 +139,10 @@ public struct TXMPermissiveFlagsResolver: Sendable {
 
         let base = internalCA.rn
         let x = internalCA.offset
-        guard base != 0, base != load.rt, base != 31,
+        // The LDRB sits between the call and the W0 stores; loading into W0
+        // would overwrite the all-ones value the patch relies on.
+        guard load.rt != 0, load.rt != 31,
+              base != 0, base != load.rt, base != 31,
               [load.rn, trust.rn, localSigning.rn, coreTrust.rn, profile.rn, debug.rn, udid.rn]
                 .allSatisfy({ $0 == base }),
               x >= 3,
