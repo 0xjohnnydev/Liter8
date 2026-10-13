@@ -26,12 +26,17 @@ Commands have deliberately narrow device states:
   persist the corresponding system-keychain row. The Dropbear
   payload also supplies the minimal System `/bin/sh`, `ls` and `cat`; the shell
   is required by both root logins and the `com.jbboot` launchd-cache job. It
-  requires `fw bootstrap` to have created `/var/jb` first.
+  requires `fw bootstrap` to have created `/var/jb` first. Provisioning also
+  installs `/usr/local/bin/l8boot` (`boothelper/`), which that job runs every
+  boot: it links Dropbear's `/tmp/bin` and `/tmp/usr/bin` PATH entries into
+  `/var/jb`, and enables injection after SpringBoard is up when
+  `/var/jb/.lhook_autoenable` exists, which `fw finalize` creates.
 - `liter8 fw setup-shell` runs only after a normal boot and installs the root
   shell profiles on the writable Data volume.
 - `liter8 fw finalize` runs once after the first normal boot. It explicitly
   invokes the bootstrap through `/var/jb/bin/sh`, configures passwd databases
-  and shells, installs the root profile, performs the guarded one-time System
+  and shells, installs the root profile, installs the dpkg hook that re-signs
+  TweakInject dylibs ad-hoc (`tweaksign/`), performs the guarded one-time System
   application registration, restarts SpringBoard and verifies `com.jbboot`.
   It refuses registration when container applications already exist.
 

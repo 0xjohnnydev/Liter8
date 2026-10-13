@@ -1182,7 +1182,7 @@ fi
 if wants jbtools && [ "$CHECK_ONLY" = 0 ]; then
     say "per-boot tools into System /usr/local and /var/jb"
     mkdir -p payload/.work
-    for required in boot/jbboot.sh spawnprobe/personaalloc ddiwatch/ddiwatch \
+    for required in boot/jbboot.sh spawnprobe/personaalloc ddiwatch/ddiwatch boothelper/l8boot \
                     photoforce/pfwatch photoforce/pfruntimeprobe payload/uicache; do
         [ -f "$required" ] || die "$required absent; run ./fetch_payloads.sh helpers"
     done
@@ -1224,6 +1224,19 @@ mv -f /mnt2/jb/usr/bin/ddiwatch.usbl8r-new /mnt2/jb/usr/bin/ddiwatch
     codesign -v payload/.work/ddiwatch.readback \
         || die "ddiwatch readback signature verification failed"
     ok "ddiwatch ($ddiwatch_sha)"
+
+    # System copy only: jbboot.sh runs it from the com.jbboot job, and launchd
+    # cannot exec anything under /var/jb.
+    l8boot_sha=$(shasum -a 256 boothelper/l8boot | awk '{print $1}')
+    put boothelper/l8boot /mnt1/usr/local/bin/l8boot.usbl8r-new
+    sh_dev 'chmod 755 /mnt1/usr/local/bin/l8boot.usbl8r-new && mv -f /mnt1/usr/local/bin/l8boot.usbl8r-new /mnt1/usr/local/bin/l8boot' \
+        || die "could not activate l8boot"
+    sh_dev '/bin/cat /mnt1/usr/local/bin/l8boot' > payload/.work/l8boot.readback
+    [ "$(shasum -a 256 payload/.work/l8boot.readback | awk '{print $1}')" = "$l8boot_sha" ] \
+        || die "l8boot readback hash mismatch"
+    codesign -v payload/.work/l8boot.readback \
+        || die "l8boot readback signature verification failed"
+    ok "l8boot ($l8boot_sha)"
 
     # Preserve the Procursus copy once, then install the iOS 27 transport. Package upgrades
     # can replace this file, so normal-boot verification checks its hash explicitly.
@@ -1705,6 +1718,21 @@ else
     ddiwatch_state=MISSING
 fi
 note "ddiwatch System" "$ddiwatch_state"
+if [ -f boothelper/l8boot ]; then
+    expected_l8boot=$(shasum -a 256 boothelper/l8boot | awk '{print $1}')
+    sh_dev '/bin/cat /mnt1/usr/local/bin/l8boot' \
+        > payload/.work/verify.l8boot 2>/dev/null || true
+    if [ -s payload/.work/verify.l8boot ] && \
+       [ "$(shasum -a 256 payload/.work/verify.l8boot | awk '{print $1}')" = "$expected_l8boot" ] && \
+       codesign -v payload/.work/verify.l8boot >/dev/null 2>&1; then
+        l8boot_state=OK
+    else
+        l8boot_state=MISMATCH
+    fi
+else
+    l8boot_state=MISSING
+fi
+note "l8boot System" "$l8boot_state"
 note "sbextissue System"  "$(sh_dev '[ -x /mnt1/usr/local/bin/sbextissue ] && echo present || echo ABSENT' | tr -d '\r')"
 note "pfruntimeprobe"     "$(sh_dev '[ -x /mnt2/jb/usr/bin/pfruntimeprobe ] && echo present || echo ABSENT' | tr -d '\r')"
 

@@ -461,6 +461,143 @@ else
     ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 
+# Theos signs tweaks with ldid's default flags=0x0, and SpringBoard silently
+# refuses those on this device (tweaksign/tweaksign.sh has the measurement). dpkg
+# runs the re-signer after every run that changes packages, so repo tweaks load
+# without rebuilding; this installs it and runs it once for what is already there.
+#
+# Installed as liter8-tweaksign with no extension: dpkg ignores any file in
+# dpkg.cfg.d whose name contains a dot, which is also why a .new staging copy
+# there is never read.
+say "tweak signing hook"
+TS_SCRIPT=/var/jb/usr/libexec/liter8/tweaksign
+TS_CFG=/var/jb/etc/dpkg/dpkg.cfg.d/liter8-tweaksign
+TS_SCRIPT_SHA=$(shasum -a 256 tweaksign/tweaksign.sh | cut -d' ' -f1)
+TS_CFG_SHA=$(shasum -a 256 tweaksign/liter8-tweaksign.cfg | cut -d' ' -f1)
+
+# Content, and the owner and exact mode: dpkg runs the script as root on every
+# install, and a third-party package has already loosened a directory's mode on
+# this device, so a correct hash in a file another account can rewrite is not an
+# installed hook. Modes come from ls -ln, the reliable reader here; a trailing
+# ACL marker is dropped.
+ts_installed() {
+    local got
+    got=$(sh_dev "$RPATH
+        [ -f $TS_SCRIPT ] && [ ! -L $TS_SCRIPT ] && [ -f $TS_CFG ] && [ ! -L $TS_CFG ] || exit 1
+        set -- \$(ls -ln $TS_SCRIPT); [ \"\${1%[.+]}\" = -rwxr-xr-x ] && [ \"\$3\" = 0 ] || exit 1
+        set -- \$(ls -ln $TS_CFG); [ \"\${1%[.+]}\" = -rw-r--r-- ] && [ \"\$3\" = 0 ] || exit 1
+        sha256sum $TS_SCRIPT $TS_CFG" < /dev/null 2>/dev/null) || return 1
+    [[ "$got" == *"$TS_SCRIPT_SHA"* && "$got" == *"$TS_CFG_SHA"* ]]
+}
+
+# Names of TweakInject dylibs that are not ad-hoc, decided by the script in this
+# tree rather than a copy of its rule, and without installing anything. The
+# status is the script's, not a pipe's: --list exits 2 when ldid is missing, and
+# an empty list from a failed run would read as "all signed".
+ts_pending() {
+    local out
+    out=$(sh_dev "$RPATH; /var/jb/bin/sh -s -- --list" < tweaksign/tweaksign.sh) || return 1
+    print -r -- "${out//$'\r'/}"
+}
+
+if ts_installed; then
+    skip "re-sign hook already installed"
+elif (( CHECK_ONLY )); then
+    skip "PENDING: the dpkg re-sign hook is missing, differs from this tree, or is not root-owned 0755/0644"
+    FINALIZE_INCOMPLETE=1
+else
+    sh_dev "$RPATH; mkdir -p ${TS_SCRIPT:h} && rm -f $TS_SCRIPT.new &&
+        cat > $TS_SCRIPT.new && chmod 0755 $TS_SCRIPT.new && mv -f $TS_SCRIPT.new $TS_SCRIPT" \
+        < tweaksign/tweaksign.sh || die "could not install $TS_SCRIPT"
+    sh_dev "$RPATH; mkdir -p ${TS_CFG:h} && rm -f $TS_CFG.new &&
+        cat > $TS_CFG.new && chmod 0644 $TS_CFG.new && mv -f $TS_CFG.new $TS_CFG" \
+        < tweaksign/liter8-tweaksign.cfg || die "could not install $TS_CFG"
+    ts_installed || die "the dpkg re-sign hook does not read back as installed"
+    ok "dpkg re-signs TweakInject dylibs ad-hoc after every package change"
+fi
+
+# The bundled bootstrap has no ldid; it arrives with apt, for instance as a
+# Sileo dependency. Its absence is not a finalize failure: tweaks are optional,
+# and the dpkg run that installs ldid triggers the hook, which signs whatever is
+# waiting. Asked as a yes/no so a dropped connection is not read as "absent".
+TS_LDID=$(sh_dev "$RPATH; command -v ldid >/dev/null && echo HAVE_LDID || echo NO_LDID" \
+    < /dev/null 2>/dev/null) || true
+if [[ "$TS_LDID" == *NO_LDID* ]]; then
+    skip "ldid is not installed yet; the hook re-signs tweaks once apt installs it (apt install ldid)"
+elif [[ "$TS_LDID" != *HAVE_LDID* ]]; then
+    (( CHECK_ONLY )) || die "could not ask the device whether ldid is installed"
+    skip "INCOMPLETE: could not ask the device whether ldid is installed"
+    FINALIZE_INCOMPLETE=1
+elif ! TS_LIST=$(ts_pending); then
+    (( CHECK_ONLY )) || die "could not check TweakInject signatures"
+    skip "INCOMPLETE: could not check TweakInject signatures"
+    FINALIZE_INCOMPLETE=1
+else
+    TS_PENDING=(${(f)TS_LIST})
+    TS_PENDING=(${TS_PENDING:#})
+    if (( ${#TS_PENDING} == 0 )); then
+        ok "every TweakInject dylib is ad-hoc signed"
+    elif (( CHECK_ONLY )); then
+        skip "INCOMPLETE: not ad-hoc, so SpringBoard will not load them: ${TS_PENDING[*]}"
+        FINALIZE_INCOMPLETE=1
+    else
+        sh_dev "$RPATH; $TS_SCRIPT" < /dev/null | sed 's/^/        /'
+        TS_LIST=$(ts_pending) || die "could not re-check TweakInject signatures"
+        TS_PENDING=(${(f)TS_LIST})
+        TS_PENDING=(${TS_PENDING:#})
+        (( ${#TS_PENDING} == 0 )) \
+            || die "these TweakInject dylibs could not be re-signed: ${TS_PENDING[*]}"
+        ok "re-signed the TweakInject dylibs that were not ad-hoc"
+    fi
+fi
+
+# Injection is on by default: at every boot l8boot, run by the com.jbboot job,
+# enables it once SpringBoard is up and resprings once, provided this file
+# exists, root-owned and not group or other writable (the predicate every
+# liter8 marker uses). lhookctl still turns it off or on for the current boot.
+# Removing the file stops the boot-time enable; that is a choice, not a fault,
+# so --check reports it rather than failing, and re-running finalize puts it back.
+say "injection auto-enable"
+AUTO_MARKER=/var/jb/.lhook_autoenable
+auto_state=$(sh_dev "$RPATH
+    [ -x /usr/local/bin/l8boot ] || echo NO_HELPER
+    if [ -L $AUTO_MARKER ]; then echo BAD
+    elif [ ! -e $AUTO_MARKER ]; then echo ABSENT
+    else
+        set -- \$(ls -ln $AUTO_MARKER); m=\${1%[.+]}
+        case \"\$m\" in -*) ;; *) echo BAD; exit 0 ;; esac
+        case \"\$m\" in ?????w*|????????w*) echo BAD; exit 0 ;; esac
+        [ \"\$3\" = 0 ] && echo OK || echo BAD
+    fi" < /dev/null 2>/dev/null) || true
+
+if [[ "$auto_state" == *NO_HELPER* ]]; then
+    skip "INCOMPLETE: /usr/local/bin/l8boot is missing; re-provision from SSHRD so the boot job can enable injection and set up the SSH PATH"
+    FINALIZE_INCOMPLETE=1
+fi
+if [[ "$auto_state" == *OK* ]]; then
+    ok "on: injection is enabled at every boot once SpringBoard is up"
+elif [[ "$auto_state" != *ABSENT* && "$auto_state" != *BAD* ]]; then
+    (( CHECK_ONLY )) || die "could not read $AUTO_MARKER"
+    skip "INCOMPLETE: could not read $AUTO_MARKER"
+    FINALIZE_INCOMPLETE=1
+elif (( CHECK_ONLY )) && [[ "$auto_state" == *ABSENT* ]]; then
+    skip "off: $AUTO_MARKER is absent, so injection needs lhookctl enable each boot"
+elif (( CHECK_ONLY )); then
+    skip "INCOMPLETE: $AUTO_MARKER is not a root-owned file that only root can write; l8boot ignores it"
+    FINALIZE_INCOMPLETE=1
+else
+    sh_dev "$RPATH; rm -f $AUTO_MARKER && : > $AUTO_MARKER && chmod 0644 $AUTO_MARKER" < /dev/null \
+        || die "could not create $AUTO_MARKER"
+    ok "on: created $AUTO_MARKER; injection is enabled at every boot once SpringBoard is up"
+    # l8boot checked the marker before it existed, so enable this boot here;
+    # the SpringBoard restart below then loads tweaks without a reboot.
+    if sh_dev "$RPATH; /var/jb/usr/bin/lhookctl enable" < /dev/null >/dev/null 2>&1; then
+        ok "injection enabled for this boot"
+    else
+        skip "could not enable injection for this boot; run lhookctl enable or reboot"
+    fi
+fi
+
 say "one-time System application registration"
 if sh_dev "$RPATH; [ -f '$REGISTRATION_MARKER' ]" >/dev/null 2>&1; then
     skip "already completed"

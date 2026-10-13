@@ -34,6 +34,7 @@ LOG=/var/mobile/jbboot.log
 PERSONAALLOC=/usr/local/bin/personaalloc
 PFWATCH=/usr/local/bin/pfwatch
 SBEXTISSUE=/usr/local/bin/sbextissue
+L8BOOT=/usr/local/bin/l8boot
 
 # echo and redirection are builtins; no external command is involved.
 # There is no date on this volume, so entries are unstamped. launchd records
@@ -84,6 +85,17 @@ else
 fi
 
 # Sileo's Data-backed sileolists directory is prepared by install_bootstrap.sh.
+
+# --- SSH PATH links, and the optional lhook auto-enable --------------------
+# l8boot links /tmp/bin and /tmp/usr/bin, which Dropbear's fixed PATH already
+# names, into /var/jb, then forks and returns at once; its child waits for
+# SpringBoard and enables injection only if /var/jb/.lhook_autoenable exists.
+# Run in the foreground: the fork leaves no child of this job to reap.
+if [ -x "$L8BOOT" ]; then
+    "$L8BOOT" >> "$LOG" 2>&1 || echo "l8boot reported a problem" >> "$LOG"
+else
+    echo "l8boot not found at $L8BOOT" >> "$LOG"
+fi
 
 # Keep this launchd job alive as the PosterBoard repair watcher. pfwatch is a native,
 # single-instance binary; it applies the exact asserted repair once per new PID and then

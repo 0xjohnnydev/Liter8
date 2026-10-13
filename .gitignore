@@ -21,6 +21,7 @@ tools/*.setup-new
 device/photoforce/pfruntimeprobe
 device/photoforce/pfwatch
 device/ddiwatch/ddiwatch
+device/boothelper/l8boot
 .ios272/
 .ios272b2/
 

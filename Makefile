@@ -50,6 +50,9 @@ integration: build
 	# header's probe and exercises absent, legacy-empty, malformed, stale and
 	# current markers. Boot-critical and otherwise uncovered by any target.
 	python3 Tests/lhook-session-tests.py
+	# The per-boot helper: SSH PATH links in a world-writable /tmp and the
+	# lhook auto-enable opt-in, compiled for the host with redirected paths.
+	python3 Tests/l8boot-tests.py
 	# Scoped help and per-action option isolation. Needs no firmware: the checks
 	# that want one skip unless MACHO, KERNEL and IM4P are exported.
 	zsh Tests/cli_assert.sh .build/debug/liter8

@@ -19,10 +19,9 @@ import Foundation
 /// `requiredRecords`, which feeds `boot-jit`, requires the profile opt-in.
 ///
 /// These are deliberately NOT part of `boot-public`. They weaken code signing
-/// for every process, so they live in the separate `boot-jit` plan. A profile
-/// makes `boot-jit` its normal-boot default with
-/// `DeviceBootPlan.normalBootRelaxesCodeSigning` (the iPad 8 research profile
-/// does); `fw get-boot --tweaks` / `--no-tweaks` override it per build.
+/// for every process, so they live in the separate `boot-jit` plan, which `fw
+/// get-boot` always builds. On a kernel profile without the opt-in it is
+/// identical to `boot-public`.
 public enum KernelCodeSigningResolver {
     /// Opt-in variant key a kernel profile sets to request these patches.
     static let variantKey = "kernel-codesign-invalid"

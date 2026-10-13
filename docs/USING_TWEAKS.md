@@ -3,16 +3,25 @@
 ElleKit is registered with dpkg, so a package declaring `Depends: mobilesubstrate`
 configures and PreferenceLoader panes render.
 
-TXM kills C function hooking. ObjC method swizzling works fine.
+ObjC hooks (`%hook`) and C function hooks (`MSHookFunction`, `%hookf`, `EKHook`)
+both work. Stock TXM refuses to let a patched code page execute again; every boot
+`fw get-boot` builds carries TXM that allows it. Device-tested on iPhone 11
+(n104ap) 24B5099f only. No other build has been boot-tested with a C hook.
 
 | works | doesn't |
 |---|---|
-| tweaks that swizzle ObjC methods | anything calling `MSHookFunction` / `EKHook` on a C function |
-| PreferenceLoader panes, AppSync | inline patches to libSystem/dyld internals |
-| anything using `%hook` on a class | `%hookf` |
+| `%hook`, `MSHookMessageEx` | C hooks on tiny functions (see below) |
+| `MSHookFunction` / `%hookf` | |
+| PreferenceLoader panes, AppSync | |
 
-Apply that filter before installing from a repo. A tweak that crash-loops its host
-is almost certainly doing function hooking.
+Tiny functions: ElleKit needs 4 instructions before the target's first `ret` or
+`b` to fit its jump. Shorter ones (`mov ; ret`, one-line wrappers) get a jump that
+cannot reach the tweak, and the host crashes.
+
+Signing: Theos signs tweaks `flags=0x0`, which SpringBoard silently refuses to
+load here. `fw finalize` installs a dpkg hook that re-signs TweakInject dylibs
+ad-hoc after every install, so repo tweaks work as-is. Your own Theos builds can
+skip that with `<TweakName>_CODESIGN_FLAGS = -S -Cadhoc` in the Makefile.
 
 Two of the shipped tweaks sit dormant until their marker exists:
 
@@ -35,8 +44,25 @@ Remove the file to turn either off.
 
 Three things to remember:
 
-1. Injection is session-bound. A reboot disables it. Every boot: `lhookctl enable`.
+1. Injection is enabled by default, because `fw finalize` creates
+   `/var/jb/.lhook_autoenable`. At every boot, once SpringBoard has been up for
+   20 s, the boot job enables injection and resprings once so SpringBoard tweaks
+   load. Manual control for the current boot:
+
+   ```sh
+   lhookctl disable    # off until enabled again or the next boot; respring to unload
+   lhookctl enable     # on again; respring so SpringBoard picks tweaks up
+   ```
+
+   To stop the boot-time enable, `rm /var/jb/.lhook_autoenable` (re-running
+   `fw finalize` puts it back). If a tweak misbehaves, SSH still works:
+   `lhookctl disable`, then respring.
 2. Tweaks on the Data volume are free to change: drop a dylib and plist in
    `/var/jb/usr/lib/TweakInject/` and respawn the target. No DFU needed.
 3. Anything in `/usr/lib` or `/sbin` costs a DFU cycle, because the System volume
    is sealed once booted.
+
+SSH commands see the bootstrap: `ssh root@… dpkg -i …` (and Theos's `make install`)
+works without exporting PATH. Dropbear's fixed PATH names `/tmp/bin` and
+`/tmp/usr/bin`, and the boot job links them to `/var/jb/usr/bin` and
+`/var/jb/usr/sbin` every boot.

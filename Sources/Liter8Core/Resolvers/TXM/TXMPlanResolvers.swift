@@ -24,3 +24,16 @@ public struct TXMBootResolver: Sendable {
             + TXMBootStateResolver().resolve(in: image)
     }
 }
+
+/// Normal-boot plan for runtime function hooks: the boot plan plus the three
+/// debug-mapping branches. `fw get-boot` always builds this one; `boot` stays a
+/// separate plan because this lets every process map modified code.
+public struct TXMBootDebugResolver: Sendable {
+    public static let name = "txm-boot-debug"
+    public init() {}
+
+    public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
+        try TXMBootResolver().resolve(in: image)
+            + TXMDebugMappingResolver().resolve(in: image)
+    }
+}
