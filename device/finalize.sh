@@ -589,6 +589,13 @@ else
     sh_dev "$RPATH; rm -f $AUTO_MARKER && : > $AUTO_MARKER && chmod 0644 $AUTO_MARKER" < /dev/null \
         || die "could not create $AUTO_MARKER"
     ok "on: created $AUTO_MARKER; injection is enabled at every boot once SpringBoard is up"
+    # l8boot checked the marker before it existed, so enable this boot here;
+    # the SpringBoard restart below then loads tweaks without a reboot.
+    if sh_dev "$RPATH; /var/jb/usr/bin/lhookctl enable" < /dev/null >/dev/null 2>&1; then
+        ok "injection enabled for this boot"
+    else
+        skip "could not enable injection for this boot; run lhookctl enable or reboot"
+    fi
 fi
 
 say "one-time System application registration"

@@ -5,7 +5,8 @@ configures and PreferenceLoader panes render.
 
 ObjC hooks (`%hook`) and C function hooks (`MSHookFunction`, `%hookf`, `EKHook`)
 both work. Stock TXM refuses to let a patched code page execute again; every boot
-`fw get-boot` builds carries TXM that allows it.
+`fw get-boot` builds carries TXM that allows it. Device-tested on iPhone 11
+(n104ap) 24B5099f only. No other build has been boot-tested with a C hook.
 
 | works | doesn't |
 |---|---|
