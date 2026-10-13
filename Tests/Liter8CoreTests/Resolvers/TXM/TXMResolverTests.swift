@@ -115,6 +115,99 @@ final class TXMResolverTests: XCTestCase {
         }
     }
 
+    // MARK: - Permissive flags (every fw get-boot boot)
+
+    /// The call becomes MOV X0,#-1 and four stores switch their source to W0;
+    /// each replacement is the original store with Rt cleared, decoded by hand:
+    /// STRH WZR,[X20,#0x218] / STRB WZR,[X20,#0x21A] / STRB W8,[X20,#0x21E] /
+    /// STRH WZR,[X20,#0x2C4].
+    func testPermissiveFlagsResolverOnBeta4() throws {
+        let records = try TXMPermissiveFlagsResolver().resolve(in: BinaryImage(contentsOf: beta4TXM))
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: records.map { ($0.offset, $0.replacementWord) }),
+            [
+                0x2C354: 0x9280_0000,
+                0x2C35C: 0x7904_3280,
+                0x2C364: 0x3908_6A80,
+                0x2C370: 0x3908_7A80,
+                0x2C374: 0x7905_8A80,
+            ]
+        )
+    }
+
+    /// 24B5099f moves the struct by 8 and the code by 0x4054; the block keeps
+    /// its shape. STRH WZR,[X20,#0x220] / STRB WZR,[X20,#0x222] /
+    /// STRB W8,[X20,#0x226] / STRH WZR,[X20,#0x2CC].
+    func testPermissiveFlagsResolverOn24B5099f() throws {
+        let txm = liter8PrivateFixtureRoot(from: #filePath)
+            .appendingPathComponent("offsets/txm/txm_24B5099f_n104_pristine.raw")
+        guard FileManager.default.fileExists(atPath: txm.path) else {
+            throw XCTSkip("local 24B5099f TXM fixture is absent")
+        }
+        let records = try TXMPermissiveFlagsResolver().resolve(in: BinaryImage(contentsOf: txm))
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: records.map { ($0.offset, $0.replacementWord) }),
+            [
+                0x303A8: 0x9280_0000,
+                0x303B0: 0x7904_4280,
+                0x303B8: 0x3908_8A80,
+                0x303C4: 0x3908_9A80,
+                0x303C8: 0x7905_9A80,
+            ]
+        )
+    }
+
+    /// Boot plan, the two mark branches, then the flags. The error-37 branch
+    /// (0x2B3D8 on beta 4) is the one left out: the task_for_pid flag covers it.
+    func testBootPermissivePlanIsBootPlusMarkBranchesPlusFlags() throws {
+        let image = try BinaryImage(contentsOf: beta4TXM)
+        let boot = try TXMBootResolver().resolve(in: image)
+        let flags = try TXMPermissiveFlagsResolver().resolve(in: image)
+        let plan = try TXMBootPermissiveResolver().resolve(in: image)
+        XCTAssertEqual(plan.map(\.offset), boot.map(\.offset) + [0x2B420, 0x28A34] + flags.map(\.offset))
+        XCTAssertFalse(plan.map(\.offset).contains(0x2B3D8))
+        XCTAssertEqual(Set(plan.map(\.offset)).count, plan.count)
+        XCTAssertEqual(plan.count, 16)
+    }
+
+    /// A consistent block whose task_for_pid halfword is not the byte the
+    /// selector-42 handler tests must refuse: STRH WZR,[X20,#0x2C6] and
+    /// STRB WZR,[X20,#0x2CC] keep the +6 spacing but move Y by two.
+    func testPermissiveFlagsRejectsHalfwordTheHandlerDoesNotRead() throws {
+        let image = try mutatedBeta4([0x2C374: 0x7905_8E9F, 0x2C378: 0x390B_329F])
+        assertThrows(try TXMPermissiveFlagsResolver().resolve(in: image)) {
+            if case .invalidPatch = $0 { return true } else { return false }
+        }
+    }
+
+    /// The internal-CA store through a different base (X21) breaks the block.
+    func testPermissiveFlagsRejectsMixedBaseRegister() throws {
+        let image = try mutatedBeta4([0x2C360: 0x3908_6EA0]) // STRB W0,[X21,#0x21B]
+        assertThrows(try TXMPermissiveFlagsResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
+    /// If CoreTrust's halfword is no longer a zero store, the block is not the
+    /// one this plan understands, so nothing is patched.
+    func testPermissiveFlagsRejectsChangedCoreTrustStore() throws {
+        let image = try mutatedBeta4([0x2C368: 0x7904_3A80]) // STRH W0,[X20,#0x21C]
+        assertThrows(try TXMPermissiveFlagsResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
+    /// A block that loads, extracts and stores the profile bit through W0 is
+    /// otherwise consistent, but the LDRB would overwrite the patched all-ones
+    /// X0 before the W0 stores run: LDRB W0,[X20,#0x2CC] / UBFX W0,W0,#1,#1 /
+    /// STRB W0,[X20,#0x21E].
+    func testPermissiveFlagsRejectsW0AsTheLoadRegister() throws {
+        let image = try mutatedBeta4([0x2C358: 0x394B_3280, 0x2C36C: 0x5301_0400, 0x2C370: 0x3908_7A80])
+        assertThrows(try TXMPermissiveFlagsResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
     private func mutatedBeta4(_ words: [UInt64: UInt32]) throws -> BinaryImage {
         var data = try Data(contentsOf: beta4TXM)
         for (offset, word) in words {

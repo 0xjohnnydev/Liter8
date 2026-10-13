@@ -120,6 +120,7 @@ expect_fail "fw boot rejects --idevicerestore"   fw boot --idevicerestore /bin/t
 expect_fail "fw prepare rejects --serial"        fw prepare --serial
 expect_fail "fw make-cfw rejects --demote-ap"    fw make-cfw --demote-ap
 expect_fail "fw boot rejects --demote-ap"        fw boot --demote-ap
+expect_fail "fw get-boot rejects --permissive-txm" fw get-boot --permissive-txm
 
 # --keep-baseband and --keep-fdr are gone: keeping the baseband predicates is
 # now the only behaviour, and --keep-fdr only ever enabled an FDR recovery that
