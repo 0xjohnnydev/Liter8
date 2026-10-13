@@ -3,16 +3,24 @@
 ElleKit is registered with dpkg, so a package declaring `Depends: mobilesubstrate`
 configures and PreferenceLoader panes render.
 
-TXM kills C function hooking. ObjC method swizzling works fine.
+ObjC hooks (`%hook`) work on any boot. C function hooks (`MSHookFunction`,
+`%hookf`, `EKHook`) need a boot built with `fw get-boot --tweaks`: stock TXM refuses
+to let a patched code page execute again, and `--tweaks` builds TXM that allows it.
 
 | works | doesn't |
 |---|---|
-| tweaks that swizzle ObjC methods | anything calling `MSHookFunction` / `EKHook` on a C function |
-| PreferenceLoader panes, AppSync | inline patches to libSystem/dyld internals |
-| anything using `%hook` on a class | `%hookf` |
+| `%hook`, `MSHookMessageEx` | C hooks on a boot built without `--tweaks` |
+| `MSHookFunction` / `%hookf` on a `--tweaks` boot | C hooks on tiny functions (see below) |
+| PreferenceLoader panes, AppSync | |
 
-Apply that filter before installing from a repo. A tweak that crash-loops its host
-is almost certainly doing function hooking.
+Tiny functions: ElleKit needs 4 instructions before the target's first `ret` or
+`b` to fit its jump. Shorter ones (`mov ; ret`, one-line wrappers) get a jump that
+cannot reach the tweak, and the host crashes.
+
+Signing: Theos signs tweaks `flags=0x0`, which SpringBoard silently refuses to
+load here. `fw finalize` installs a dpkg hook that re-signs TweakInject dylibs
+ad-hoc after every install, so repo tweaks work as-is. Your own Theos builds can
+skip that with `<TweakName>_CODESIGN_FLAGS = -S -Cadhoc` in the Makefile.
 
 Two of the shipped tweaks sit dormant until their marker exists:
 

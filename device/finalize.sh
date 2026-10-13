@@ -461,6 +461,77 @@ else
     ok "ellekit $ELLEKIT_VER installed, digest verified; all ${#EK_LINKS} names resolve; package files verified; boot script diverted"
 fi
 
+# Theos signs tweaks with ldid's default flags=0x0, and SpringBoard silently
+# refuses those on this device (tweaksign/tweaksign.sh has the measurement). dpkg
+# runs the re-signer after every run that changes packages, so repo tweaks load
+# without rebuilding; this installs it and runs it once for what is already there.
+#
+# Installed as liter8-tweaksign with no extension: dpkg ignores any file in
+# dpkg.cfg.d whose name contains a dot, which is also why a .new staging copy
+# there is never read.
+say "tweak signing hook"
+TS_SCRIPT=/var/jb/usr/libexec/liter8/tweaksign
+TS_CFG=/var/jb/etc/dpkg/dpkg.cfg.d/liter8-tweaksign
+TS_SCRIPT_SHA=$(shasum -a 256 tweaksign/tweaksign.sh | cut -d' ' -f1)
+TS_CFG_SHA=$(shasum -a 256 tweaksign/liter8-tweaksign.cfg | cut -d' ' -f1)
+
+ts_installed() {
+    local got
+    got=$(sh_dev "$RPATH
+        [ -x $TS_SCRIPT ] && [ ! -L $TS_SCRIPT ] && [ -f $TS_CFG ] && [ ! -L $TS_CFG ] &&
+            sha256sum $TS_SCRIPT $TS_CFG" < /dev/null 2>/dev/null | tr -d '\r') || return 1
+    [[ "$got" == *"$TS_SCRIPT_SHA"* && "$got" == *"$TS_CFG_SHA"* ]]
+}
+
+# Names of TweakInject dylibs that are not ad-hoc, decided by the script in this
+# tree rather than a copy of its rule, and without installing anything. The
+# status is the script's, not a pipe's: --list exits 2 when ldid is missing, and
+# an empty list from a failed run would read as "all signed".
+ts_pending() {
+    local out
+    out=$(sh_dev "$RPATH; /var/jb/bin/sh -s -- --list" < tweaksign/tweaksign.sh) || return 1
+    print -r -- "${out//$'\r'/}"
+}
+
+if ts_installed; then
+    skip "re-sign hook already installed"
+elif (( CHECK_ONLY )); then
+    skip "PENDING: the dpkg re-sign hook is not installed or differs from this tree"
+    FINALIZE_INCOMPLETE=1
+else
+    sh_dev "$RPATH; mkdir -p ${TS_SCRIPT:h} && rm -f $TS_SCRIPT.new &&
+        cat > $TS_SCRIPT.new && chmod 0755 $TS_SCRIPT.new && mv -f $TS_SCRIPT.new $TS_SCRIPT" \
+        < tweaksign/tweaksign.sh || die "could not install $TS_SCRIPT"
+    sh_dev "$RPATH; mkdir -p ${TS_CFG:h} && rm -f $TS_CFG.new &&
+        cat > $TS_CFG.new && chmod 0644 $TS_CFG.new && mv -f $TS_CFG.new $TS_CFG" \
+        < tweaksign/liter8-tweaksign.cfg || die "could not install $TS_CFG"
+    ts_installed || die "the dpkg re-sign hook does not read back as installed"
+    ok "dpkg re-signs TweakInject dylibs ad-hoc after every package change"
+fi
+
+if ! TS_LIST=$(ts_pending); then
+    (( CHECK_ONLY )) || die "could not check TweakInject signatures; is ldid in the bootstrap?"
+    skip "INCOMPLETE: could not check TweakInject signatures; is ldid in the bootstrap?"
+    FINALIZE_INCOMPLETE=1
+else
+    TS_PENDING=(${(f)TS_LIST})
+    TS_PENDING=(${TS_PENDING:#})
+    if (( ${#TS_PENDING} == 0 )); then
+        ok "every TweakInject dylib is ad-hoc signed"
+    elif (( CHECK_ONLY )); then
+        skip "INCOMPLETE: not ad-hoc, so SpringBoard will not load them: ${TS_PENDING[*]}"
+        FINALIZE_INCOMPLETE=1
+    else
+        sh_dev "$RPATH; $TS_SCRIPT" < /dev/null | sed 's/^/        /'
+        TS_LIST=$(ts_pending) || die "could not re-check TweakInject signatures"
+        TS_PENDING=(${(f)TS_LIST})
+        TS_PENDING=(${TS_PENDING:#})
+        (( ${#TS_PENDING} == 0 )) \
+            || die "these TweakInject dylibs could not be re-signed: ${TS_PENDING[*]}"
+        ok "re-signed the TweakInject dylibs that were not ad-hoc"
+    fi
+fi
+
 say "one-time System application registration"
 if sh_dev "$RPATH; [ -f '$REGISTRATION_MARKER' ]" >/dev/null 2>&1; then
     skip "already completed"

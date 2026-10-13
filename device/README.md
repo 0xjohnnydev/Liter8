@@ -31,7 +31,8 @@ Commands have deliberately narrow device states:
   shell profiles on the writable Data volume.
 - `liter8 fw finalize` runs once after the first normal boot. It explicitly
   invokes the bootstrap through `/var/jb/bin/sh`, configures passwd databases
-  and shells, installs the root profile, performs the guarded one-time System
+  and shells, installs the root profile, installs the dpkg hook that re-signs
+  TweakInject dylibs ad-hoc (`tweaksign/`), performs the guarded one-time System
   application registration, restarts SpringBoard and verifies `com.jbboot`.
   It refuses registration when container applications already exist.
 
