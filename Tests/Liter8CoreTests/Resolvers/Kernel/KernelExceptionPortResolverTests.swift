@@ -40,11 +40,47 @@ final class KernelExceptionPortResolverTests: XCTestCase {
         XCTAssertEqual(Set(plan.map(\.offset)).count, plan.count)
     }
 
-    /// A byte that already reads 0 is not the stock switch.
-    func testRejectsAByteThatIsNotSet() throws {
+    /// An image this patch already applied still resolves, naming the stock 1 as
+    /// the original so the guarded applier sees "already applied".
+    func testResolvesAnAlreadyAppliedByte() throws {
         let image = try mutatedBeta4(bytes: [0xBBF278: 0])
+        let records = try KernelExceptionPortResolver().resolve(in: image)
+        XCTAssertEqual(records.map(\.offset), [0xBBF278])
+        XCTAssertEqual(records.map(\.originalBytes), [Data([1])])
+        XCTAssertEqual(records.map(\.replacementBytes), [Data([0])])
+    }
+
+    /// Neither the stock value nor the patched one.
+    func testRejectsAnUnexpectedByteValue() throws {
+        let image = try mutatedBeta4(bytes: [0xBBF278: 2])
         assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
             if case .invalidPatch = $0 { return true } else { return false }
+        }
+    }
+
+    /// The deny result must come from the loaded register: SBFX W8,W9 instead
+    /// of SBFX W8,W8 on the bypass edge.
+    func testRejectsWhenTheDenyResultIgnoresTheLoadedByte() throws {
+        let image = try mutatedBeta4(words: [0x322610C: 0x1300_0128])
+        assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
+    /// AND W0,W10,W9 instead of AND W0,W8,W9: the result no longer uses SBFX's.
+    func testRejectsWhenTheAndSkipsTheSignExtendedByte() throws {
+        let image = try mutatedBeta4(words: [0x3226114: 0x0A09_0140])
+        assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
+        }
+    }
+
+    /// The bypass edge's exit branch redirected into the guard call path
+    /// (B +4 to 0x322611C): clearing the byte would no longer skip the guard.
+    func testRejectsWhenTheBypassRejoinsTheGuardCall() throws {
+        let image = try mutatedBeta4(words: [0x3226118: 0x1400_0001])
+        assertThrows(try KernelExceptionPortResolver().resolve(in: image)) {
+            if case .noCandidate = $0 { return true } else { return false }
         }
     }
 

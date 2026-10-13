@@ -52,9 +52,8 @@ public struct KernelExceptionPortResolver: Sendable {
 
         var loads: [(offset: UInt64, target: UInt64, rt: UInt32)] = []
         var guardCalls: [UInt64] = []
-        var denyFromByte = false
         var cursor = start
-        while cursor + 12 <= end {
+        while cursor + 8 <= end {
             let word = try image.readUInt32(at: cursor)
             let next = try image.readUInt32(at: cursor + 4)
             if let load = try byteLoad(adrp: word, at: cursor, next: next, layout: layout) {
@@ -62,14 +61,6 @@ public struct KernelExceptionPortResolver: Sendable {
             }
             if word == Self.movW2Flavor6, ARM64.branchLinkTarget(instruction: next, at: cursor + 4) != nil {
                 guardCalls.append(cursor)
-            }
-            // SBFX Wd,Wn,#0,#1 is SBFM Wd,Wn,#0,#0: 0x13000000 | Rn<<5 | Rd.
-            // MOVZ Wx,#0x35 is 0x528006A0 | Rd; AND (shifted register) 32-bit
-            // is 0x0A000000 with Rm/Rn/Rd varying.
-            if word & 0xFFFF_FC00 == 0x1300_0000,
-               next & 0xFFFF_FFE0 == 0x5280_06A0,
-               try image.readUInt32(at: cursor + 8) & 0xFF20_0000 == 0x0A00_0000 {
-                denyFromByte = true
             }
             cursor += 4
         }
@@ -84,19 +75,18 @@ public struct KernelExceptionPortResolver: Sendable {
             throw PatchfinderError.ambiguousCandidate("\(Self.name) flavor-6 guard call", offsets: guardCalls)
         }
         guard try loads.contains(where: { try gates(load: $0, guardCall: guardCall, image: image) }) else {
-            throw PatchfinderError.noCandidate("\(Self.name) byte test leading to the guard call")
-        }
-        guard denyFromByte else {
-            throw PatchfinderError.noCandidate("\(Self.name) KERN_DENIED derived from the byte")
+            throw PatchfinderError.noCandidate("\(Self.name) byte test whose bypass derives KERN_DENIED and skips the guard call")
         }
         guard let segment = layout.segments.first(where: { $0.fileRange.contains(byte) }),
               segment.name == "__DATA_CONST", !segment.isExecutable
         else {
             throw PatchfinderError.invalidPatch(id: Self.name, reason: "enforcement byte \(byte.hex) is not in __DATA_CONST")
         }
-        let original = try image.bytes(at: byte, count: 1)
-        guard original == Data([1]) else {
-            throw PatchfinderError.invalidPatch(id: Self.name, reason: "enforcement byte \(byte.hex) is \(String(format: "%02x", original.first ?? 0)), expected 01")
+        // Stock is 1. 0 is this patch already applied; the record still names
+        // 1 as the original so GuardedPatchApplier reports it as already applied.
+        let current = try image.bytes(at: byte, count: 1)
+        guard current == Data([1]) || current == Data([0]) else {
+            throw PatchfinderError.invalidPatch(id: Self.name, reason: "enforcement byte \(byte.hex) is \(String(format: "%02x", current.first ?? 0)), expected 01")
         }
 
         return [
@@ -104,14 +94,14 @@ public struct KernelExceptionPortResolver: Sendable {
                 id: "kernel.exception-port.behavior-enforcement",
                 component: "kernelcache",
                 offset: byte,
-                originalBytes: original,
+                originalBytes: Data([1]),
                 replacementBytes: Data([0]),
                 summary: "Ignore non-identity-protected exception-port registrations instead of killing the caller",
                 evidence: [
                     "only function referencing \(Self.anchor): \(start.hex)",
                     "all \(loads.count) ADRP+LDRB loads in it read \(byte.hex) (__DATA_CONST, value 1)",
-                    "a load of it is tested by TBZ/TBNZ #0 on the path to MOV W2,#6 ; BL at \(guardCall.hex)",
-                    "SBFX/MOV #0x35/AND derives KERN_DENIED from the byte",
+                    "a load of it is tested by TBZ/TBNZ #0: one edge reaches MOV W2,#6 ; BL at \(guardCall.hex)",
+                    "the other edge skips that call and turns the loaded register into KERN_DENIED (SBFX/MOV #0x35/AND W0)",
                 ]
             ),
         ]
@@ -136,21 +126,73 @@ public struct KernelExceptionPortResolver: Sendable {
         return (target, next & 0x1F)
     }
 
-    /// The word after the load is TBZ/TBNZ Wt,#0 on the loaded register, and the
-    /// guard call is its fall-through (TBZ) or its target (TBNZ), allowing the
-    /// two argument moves that precede `MOV W2,#6`.
+    /// The word after the load is TBZ/TBNZ Wt,#0 on the loaded register. One
+    /// edge reaches the guard call: TBZ falls through into it, TBNZ branches to
+    /// it, allowing the two argument moves before `MOV W2,#6`. The other edge,
+    /// taken when the byte is clear, must reach `B` without the guard call and
+    /// on the way compute the result from the same register: `SBFX Wd,Wt,#0,#1`,
+    /// `MOVZ Wm,#0x35`, `AND W0,Wd,Wm` (either operand order).
     private func gates(
         load: (offset: UInt64, target: UInt64, rt: UInt32),
         guardCall: UInt64,
         image: BinaryImage
     ) throws -> Bool {
-        let test = try image.readUInt32(at: load.offset + 4)
+        let testSite = load.offset + 4
+        let test = try image.readUInt32(at: testSite)
         // TBZ is 0x36000000, TBNZ 0x37000000; b5 and b40 zero select bit 0 of W.
         guard test & 0xFEF8_0000 == 0x3600_0000, test & 0x1F == load.rt,
-              let target = ARM64.testBranchTarget(instruction: test, at: load.offset + 4)
+              let target = ARM64.testBranchTarget(instruction: test, at: testSite)
         else { return false }
-        let entry = test & 0x0100_0000 == 0 ? load.offset + 8 : target
-        return guardCall >= entry && guardCall - entry <= 8
+        let isTBNZ = test & 0x0100_0000 != 0
+        let guardEdge = isTBNZ ? target : testSite + 4
+        let bypassEdge = isTBNZ ? testSite + 4 : target
+        guard guardCall >= guardEdge, guardCall - guardEdge <= 8 else { return false }
+        return try bypassDeniesFromByte(from: bypassEdge, register: load.rt, guardCall: guardCall, image: image)
+    }
+
+    /// Straight-line walk of at most eight words from `start`.
+    private func bypassDeniesFromByte(
+        from start: UInt64,
+        register: UInt32,
+        guardCall: UInt64,
+        image: BinaryImage
+    ) throws -> Bool {
+        var derived = false
+        var cursor = start
+        for _ in 0..<8 {
+            guard cursor != guardCall else { return false }
+            let word = try image.readUInt32(at: cursor)
+            // B (unconditional): the path leaves; it must not land on the guard.
+            if word & 0xFC00_0000 == 0x1400_0000 {
+                guard let target = ARM64.directBranchTarget(instruction: word, at: cursor),
+                      !(target <= guardCall && guardCall - target <= 8)
+                else { return false }
+                return derived
+            }
+            // SBFX Wd,Wn,#0,#1 is SBFM Wd,Wn,#0,#0: 0x13000000 | Rn<<5 | Rd.
+            if !derived, word & 0xFFFF_FC00 == 0x1300_0000, (word >> 5) & 0x1F == register {
+                let sbfxRd = word & 0x1F
+                let mov = try image.readUInt32(at: cursor + 4)
+                let and = try image.readUInt32(at: cursor + 8)
+                // MOVZ Wm,#0x35 is 0x528006A0 | Rd. AND Wd,Wn,Wm (shifted
+                // register, LSL #0) is 0x0A000000 | Rm<<16 | Rn<<5 | Rd.
+                guard mov & 0xFFFF_FFE0 == 0x5280_06A0,
+                      and & 0xFFE0_FC00 == 0x0A00_0000,
+                      and & 0x1F == 0
+                else { return false }
+                let operands = Set([(and >> 16) & 0x1F, (and >> 5) & 0x1F])
+                guard operands == Set([sbfxRd, mov & 0x1F]) else { return false }
+                derived = true
+                cursor += 12
+                continue
+            }
+            // Before the SBFX, anything that could overwrite the loaded register
+            // breaks the data flow. Branches that only test registers are fine.
+            let isTestBranch = word & 0x7E00_0000 == 0x3400_0000 || word & 0x7E00_0000 == 0x3600_0000
+            if !derived, !isTestBranch, word & 0x1F == register { return false }
+            cursor += 4
+        }
+        return false
     }
 }
 
