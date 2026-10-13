@@ -26,7 +26,7 @@ COMPONENTS AND PLANS:
               credential-manager, sandbox, sandbox-public, ppl-allow-invalid,
               vm-fault-cs-bypass, vm-map-protect, valeria, boot, boot-public,
               boot-jit, diagnostic
-  txm         restore, boot
+  txm         restore, boot, debug-mapping, boot-debug
   userland    restored-fdr, asr, coreauthd, ctkd, mobileactivationd, commcenter
   devicetree  restore, normal
 """

@@ -26,6 +26,7 @@ import measure_guards  # noqa: E402
 from boot_artifacts import (  # noqa: E402
     PASSTHROUGH_IMG4,
     has_txm,
+    normal_boot_plans,
     publish_directory,
     ticket_from_environment,
     write_boot_manifest,
@@ -1144,6 +1145,31 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(manifest["kernelPlan"], "boot-public")
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
+    def test_normal_boot_manifest_records_the_txm_plan(self):
+        # boot-debug relaxes code signing for every process, so a boot set has
+        # to say which TXM it carries, and the extra key must not break fw boot.
+        fixture_context = self.make_boot_set(
+            "normal", kernel_plan="boot-jit", txm_plan="boot-debug"
+        )
+        manifest = json.loads((self.work / "Ramdisk/liter8-boot.json").read_text())
+        self.assertEqual(manifest["txmPlan"], "boot-debug")
+        self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
+
+    def test_tweaks_select_both_code_signing_relaxations(self):
+        self.assertEqual(
+            normal_boot_plans(patch_txm=True, tweak_hooks=True), ("boot-jit", "boot-debug")
+        )
+
+    def test_default_boot_keeps_both_reviewed_plans(self):
+        self.assertEqual(
+            normal_boot_plans(patch_txm=True, tweak_hooks=False), ("boot-public", "boot")
+        )
+
+    def test_no_txm_plan_without_txm_in_the_identity(self):
+        # j171aap has no SPTM/TXM: --tweaks there is the kernel half only.
+        self.assertEqual(normal_boot_plans(patch_txm=False, tweak_hooks=True), ("boot-jit", None))
+        self.assertEqual(normal_boot_plans(patch_txm=False, tweak_hooks=False), ("boot-public", None))
+
     def test_boot_sequence_uses_only_firmware_in_the_identity(self):
         # The j171aap 23H30 erase identity has no SPTM/TXM, PMP or WCH, and its
         # profile says so. The absence alone is not enough any more.
@@ -1302,7 +1328,7 @@ class ContextTests(unittest.TestCase):
             ["/custom/irecovery", "-c", "bootx"],
         )
 
-    def make_boot_set(self, mode, *, kernel_plan=None, components=None,
+    def make_boot_set(self, mode, *, kernel_plan=None, txm_plan=None, components=None,
                       optional_firmware=frozenset()):
         staging = self.work / "boot-staging"
         staging.mkdir()
@@ -1332,7 +1358,9 @@ class ContextTests(unittest.TestCase):
             "normal_boot_static_trust_cache": False,
             "optional_passthrough_firmware": optional_firmware,
         })()
-        write_boot_manifest(fixture_context, staging, mode, kernel_plan=kernel_plan)
+        write_boot_manifest(
+            fixture_context, staging, mode, kernel_plan=kernel_plan, txm_plan=txm_plan
+        )
         publish_directory(staging, self.work / "Ramdisk")
         return fixture_context
 

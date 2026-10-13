@@ -94,9 +94,10 @@ struct TweakHooksOption: ParsableArguments {
     @Flag(
         name: .customLong("tweaks"),
         help: """
-        Build the normal-boot kernelcache with the code-signing-invalid patches \
-        (kernel boot-jit) so runtime tweak hooks survive. Off by default: it \
-        weakens code signing for every process.
+        Build the normal boot so runtime tweak hooks survive: the kernelcache \
+        with the code-signing-invalid patches (kernel boot-jit) and, where the \
+        device has one, TXM that approves debug mappings (txm boot-debug). Off \
+        by default: it weakens code signing for every process.
         """
     )
     var enableTweakHooks = false

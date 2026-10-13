@@ -63,6 +63,8 @@ let resolverGroups: [String: [String: String]] = [
     "txm": [
         "restore": TXMRestoreResolver.name,
         "boot": TXMBootResolver.name,
+        "debug-mapping": TXMDebugMappingResolver.name,
+        "boot-debug": TXMBootDebugResolver.name,
     ],
     "userland": [
         "restored-fdr": RestoredExternalResolver.name,
@@ -173,6 +175,12 @@ func resolveRecords(
     case TXMBootResolver.name:
         try options.requireNoTuning(resolver: name)
         return try TXMBootResolver().resolve(in: image)
+    case TXMDebugMappingResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try TXMDebugMappingResolver().resolve(in: image)
+    case TXMBootDebugResolver.name:
+        try options.requireNoTuning(resolver: name)
+        return try TXMBootDebugResolver().resolve(in: image)
     case CoreAuthDResolver.name:
         try options.requireNoTuning(resolver: name)
         return try CoreAuthDResolver().resolve(in: image)

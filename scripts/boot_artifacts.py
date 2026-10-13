@@ -89,6 +89,23 @@ def has_txm(components: dict[str, str], mode: str) -> bool:
     return has_monitor
 
 
+def normal_boot_plans(*, patch_txm: bool, tweak_hooks: bool) -> tuple[str, str | None]:
+    """Kernel and TXM plans for a normal boot, as (kernel_plan, txm_plan).
+
+    fw get-boot --tweaks is one switch for runtime function hooks, and both
+    halves are opt-in because they weaken code signing for every process. Each
+    covers one code-signing monitor and is inert where that monitor is absent:
+    kernel boot-jit carries the PPL patches (only a kernel profile that opts in
+    gets any), and txm boot-debug lets TXM approve the debug mapping a modified
+    code page needs before it can execute again. No TXM in the identity means no
+    TXM plan at all.
+    """
+    kernel_plan = "boot-jit" if tweak_hooks else "boot-public"
+    if not patch_txm:
+        return kernel_plan, None
+    return kernel_plan, "boot-debug" if tweak_hooks else "boot"
+
+
 def ticket_from_environment() -> Path:
     value = os.environ.get("LITER8_AP_TICKET")
     if not value:
@@ -139,6 +156,7 @@ def write_boot_manifest(
     mode: str,
     *,
     kernel_plan: str | None = None,
+    txm_plan: str | None = None,
 ) -> None:
     """Bind a device command to the exact artifact family it is about to send."""
     artifacts = {}
@@ -161,6 +179,10 @@ def write_boot_manifest(
     }
     if kernel_plan is not None:
         document["kernelPlan"] = kernel_plan
+    # Recorded for the same reason as the kernel plan: boot-debug relaxes code
+    # signing for every process, so which TXM a boot set carries must be visible.
+    if txm_plan is not None:
+        document["txmPlan"] = txm_plan
     (staging / "liter8-boot.json").write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n"
     )
@@ -175,6 +197,10 @@ def build_normal_boot() -> None:
         optional_firmware=context.optional_passthrough_firmware,
     )
     patch_txm = has_txm(context.components, "normal")
+    kernel_plan, txm_plan = normal_boot_plans(
+        patch_txm=patch_txm,
+        tweak_hooks=os.environ.get("LITER8_ENABLE_TWEAK_HOOKS") == "1",
+    )
 
     # Build beside .liter8 first. A failed resolver or signing step leaves the
     # operator's previous Ramdisk directory intact.
@@ -218,7 +244,7 @@ def build_normal_boot() -> None:
             print("[*] normal boot: patching TXM", flush=True)
             txm = staging / ".TXM.im4p"
             shutil.copy2(context.component("Ap,TrustedExecutionMonitor"), txm)
-            context.apply("txm", "boot", txm, record_name="boot-txm")
+            context.apply("txm", txm_plan, txm, record_name="boot-txm")
             create_img4(context, txm, ticket, staging / "TXM.img4")
 
         print("[*] normal boot: patching DeviceTree", flush=True)
@@ -235,11 +261,6 @@ def build_normal_boot() -> None:
         print("[*] normal boot: patching kernelcache", flush=True)
         kernel = staging / ".Kernelcache.im4p"
         shutil.copy2(context.component("KernelCache"), kernel)
-        # boot-jit adds the code-signing-invalid patches so runtime tweak hooks
-        # are not killed. It is opt-in (fw get-boot --tweaks) because it weakens
-        # code signing for every process, and its extra records resolve only on
-        # a kernel profile that registers the patches.
-        kernel_plan = "boot-jit" if os.environ.get("LITER8_ENABLE_TWEAK_HOOKS") == "1" else "boot-public"
         context.apply("kernel", kernel_plan, kernel, record_name="boot-kernel")
         create_img4(
             context, kernel, ticket, staging / "Kernelcache.img4", fourcc="rkrn"
@@ -248,7 +269,9 @@ def build_normal_boot() -> None:
         # Dot-prefixed intermediates are not part of the public boot artifact set.
         for intermediate in staging.glob(".*"):
             intermediate.unlink()
-        write_boot_manifest(context, staging, "normal", kernel_plan=kernel_plan)
+        write_boot_manifest(
+            context, staging, "normal", kernel_plan=kernel_plan, txm_plan=txm_plan
+        )
         publish_directory(staging, context.work / "Ramdisk")
 
     print("[+] normal boot artifacts are ready in Ramdisk", flush=True)
