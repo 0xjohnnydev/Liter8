@@ -42,24 +42,21 @@ final class TXMResolverTests: XCTestCase {
 
     // MARK: - Debug mapping (opt-in, fw get-boot --tweaks)
 
-    /// The two allow branches, each becoming a B to the TBNZ's own target:
-    /// +0x18 and +0x38, which is why the replacements are fixed here.
+    /// The three allow branches, each becoming a B to the TBNZ's own target:
+    /// +0x18, +0x38 and +0xEC, which is why the replacements are fixed here.
     private let debugMappingBeta4: [UInt64: UInt32] = [
         0x2B3D8: 0x1400_0006, // error 37, caller entitlement
         0x2B420: 0x1400_000E, // error 29, address-space mark
+        0x28A34: 0x1400_003B, // error 30, validator's read of the same mark
     ]
 
-    /// The validator's read of the same mark: a research candidate that is
-    /// deliberately not patched (see TXMDebugMappingResolver).
-    private let validatorMarkBeta4: UInt64 = 0x28A34
-
-    func testDebugMappingResolverForcesTwoAllowBranches() throws {
+    func testDebugMappingResolverForcesThreeAllowBranches() throws {
         let records = try TXMDebugMappingResolver().resolve(in: BinaryImage(contentsOf: beta4TXM))
         XCTAssertEqual(
             Dictionary(uniqueKeysWithValues: records.map { ($0.offset, $0.replacementWord) }),
             debugMappingBeta4
         )
-        XCTAssertEqual(records.compactMap(\.originalWord).filter { $0 & 0xFFF8_0000 == 0x3700_0000 }.count, 2)
+        XCTAssertEqual(records.compactMap(\.originalWord).filter { $0 & 0xFFF8_0000 == 0x3700_0000 }.count, 3)
     }
 
     /// Same sites on the 27.2 build the device runs, where every offset moved.
@@ -72,7 +69,7 @@ final class TXMResolverTests: XCTestCase {
         let records = try TXMDebugMappingResolver().resolve(in: BinaryImage(contentsOf: txm))
         XCTAssertEqual(
             Dictionary(uniqueKeysWithValues: records.map { ($0.offset, $0.replacementWord) }),
-            [0x2F408: 0x1400_0006, 0x2F450: 0x1400_000E]
+            [0x2F408: 0x1400_0006, 0x2F450: 0x1400_000E, 0x2CA64: 0x1400_003B]
         )
     }
 
@@ -83,7 +80,7 @@ final class TXMResolverTests: XCTestCase {
         let plan = try TXMBootDebugResolver().resolve(in: image)
         XCTAssertEqual(plan.map(\.offset), boot.map(\.offset) + debug.map(\.offset))
         XCTAssertTrue(Set(boot.map(\.offset)).isDisjoint(with: debug.map(\.offset)))
-        XCTAssertEqual(plan.count, 11)
+        XCTAssertEqual(plan.count, 12)
     }
 
     /// Pointing the error-37 branch anywhere but the entitlement's allow target
@@ -111,17 +108,11 @@ final class TXMResolverTests: XCTestCase {
         }
     }
 
-    /// The validator's TBNZ is a research candidate, not part of the plan: no
-    /// record may touch it, and its bytes must not matter to the resolver.
-    func testDebugMappingLeavesValidatorUntouched() throws {
-        let records = try TXMBootDebugResolver().resolve(in: BinaryImage(contentsOf: beta4TXM))
-        XCTAssertFalse(records.contains { $0.id == "txm.debug-mapping.validator-address-space" })
-        XCTAssertFalse(records.contains { (validatorMarkBeta4..<validatorMarkBeta4 + 4).contains($0.offset) })
-        let altered = try mutatedBeta4([validatorMarkBeta4: 0x3700_0788]) // TBNZ W8,#0,+0xF0
-        XCTAssertEqual(
-            try TXMDebugMappingResolver().resolve(in: altered).map(\.offset).sorted(),
-            debugMappingBeta4.keys.sorted()
-        )
+    func testDebugMappingRejectsValidatorBranchWithForeignTarget() throws {
+        let image = try mutatedBeta4([0x28A34: 0x3700_0788]) // TBNZ W8,#0,+0xF0
+        assertThrows(try TXMDebugMappingResolver().resolve(in: image)) {
+            if case .invalidPatch = $0 { return true } else { return false }
+        }
     }
 
     private func mutatedBeta4(_ words: [UInt64: UInt32]) throws -> BinaryImage {

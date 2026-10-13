@@ -1,6 +1,6 @@
 import Foundation
 
-/// Resolves the two TXM branches that refuse a debug mapping, the mapping a
+/// Resolves the three TXM branches that refuse a debug mapping, the mapping a
 /// process needs before a code page it has made writable can execute again.
 ///
 /// When a process asks `vm_protect` for `VM_PROT_COPY` on a code page, XNU asks
@@ -11,29 +11,30 @@ import Foundation
 /// holding `com.apple.private.cs.debugger` logs `42 | 29`, and a traced
 /// `get-task-allow` process logs nothing, keeps `rwx` and runs the patched code.
 ///
-/// Two branches in the selector-42 handler decide it, each an existing `TBNZ`
-/// whose taken edge is the allow path. Each becomes an unconditional `B` to the
-/// target that instruction already names, so no control flow is manufactured:
+/// Three branches decide it, each an existing `TBNZ` whose taken edge is the
+/// allow path. Each becomes an unconditional `B` to the target that instruction
+/// already names, so no control flow is manufactured:
 ///
-/// - error 37: the caller lacks the debugger entitlement and a policy byte is
-///   clear;
-/// - error 29: the address space is not marked. Only selector 41's handler sets
-///   that mark, for a debugged `get-task-allow` target.
+/// - error 37, selector-42 handler: the caller lacks the debugger entitlement
+///   and a policy byte is clear;
+/// - error 29, same handler: the address space is not marked. Only selector
+///   41's handler sets that mark, for a debugged `get-task-allow` target;
+/// - error 30, the writable/executable debug-mapping validator: neither the
+///   entitlement nor the mark. It is not on the selector-42 path; it is reached
+///   through TXM's other entry trampoline, case 1, with page-aligned arguments
+///   (inferred to be SPTM's page-mapping callback), so it relaxes every
+///   writable debug mapping that entry validates.
 ///
-/// The error-37 site is tied to the handler's own entitlement check: the forced
+/// The third is needed for an ordinary process. Measured on n104 24B5099f with
+/// only the first two applied: the copy kept `rwx` for every caller, but the
+/// write into it faulted for a probe holding neither the entitlement nor the
+/// mark, and landed for each of the other three combinations. That is exactly
+/// the validator's rule, and its refusal is not logged.
+///
+/// Each site is tied to the entitlement check in its own function: the forced
 /// branch must name the same target that holding the entitlement already jumps
 /// to. A data patch to the policy byte was tried first and refuted on device;
 /// the byte reads zero at runtime regardless of the image.
-///
-/// Research candidate, deliberately not applied: the writable/executable
-/// debug-mapping validator (`0x2c8cc` on 24B5099f, error 30, "disallowed
-/// writable debug mapping due to address space") reads the same mark, and its
-/// `TBNZ` at `0x2ca64` could be forced to its allow target `0x2cb50` the same
-/// way. It is not on the selector-42 path: it is reached only through TXM's
-/// other entry trampoline, case 1, with page-aligned arguments, which is
-/// inferred to be SPTM's page-mapping callback. No device run has logged a
-/// refusal from it, and forcing it would relax every mapping that entry
-/// validates, so it is left out until a refusal from it is observed.
 public struct TXMDebugMappingResolver: Sendable {
     public static let name = "txm-debug-mapping"
 
@@ -45,6 +46,15 @@ public struct TXMDebugMappingResolver: Sendable {
         let entitlementRefs = try layout.adrpAddReferences(toFileOffset: entitlement)
 
         let handler = try resolveHandler(image: image, layout: layout, entitlementRefs: entitlementRefs)
+        let validator = try resolveValidator(
+            image: image, layout: layout, entitlementRefs: entitlementRefs
+        )
+        guard validator.function != handler.function else {
+            throw PatchfinderError.invalidPatch(
+                id: Self.name,
+                reason: "the validator and the selector-42 handler resolved to one function"
+            )
+        }
 
         return [
             try forcedBranch(
@@ -68,6 +78,18 @@ public struct TXMDebugMappingResolver: Sendable {
                 evidence: [
                     "ADD #0x30 / LDARB / TBNZ #0 / MOV #0x1d is unique in \(handler.function.hex)",
                     "the fall-through sets error 0x1d (29)",
+                ]
+            ),
+            try forcedBranch(
+                id: "txm.debug-mapping.validator-address-space",
+                site: validator.site,
+                target: validator.allow,
+                image: image,
+                summary: "Let the debug-mapping validator accept an address space that is not marked",
+                evidence: [
+                    "unique \"disallowed writable debug mapping due to address space\" reference in \(validator.function.hex)",
+                    "ADD #0x30 / LDARB / TBNZ #0 immediately before it reads the same mark",
+                    "TBNZ target \(validator.allow.hex) equals the entitlement result's allow target",
                 ]
             ),
         ]
@@ -143,10 +165,47 @@ public struct TXMDebugMappingResolver: Sendable {
         )
     }
 
+    // MARK: - Validator: error 30, second reader of the mark
+
+    private struct Validator {
+        let function: UInt64
+        let site: UInt64
+        let allow: UInt64
+    }
+
+    private func resolveValidator(
+        image: BinaryImage,
+        layout: MachOLayout,
+        entitlementRefs: [ADRPAddReference]
+    ) throws -> Validator {
+        let message = try uniqueCString(
+            "disallowed writable debug mapping due to address space", in: image
+        )
+        let reference = try onlyReference(to: message, layout: layout, what: "error-30 message")
+        let (function, end) = try bounds(of: reference.adrpOffset, image: image, layout: layout)
+
+        guard reference.adrpOffset >= function + 12,
+              let mark = try markCheck(endingAt: reference.adrpOffset - 4, image: image),
+              (function..<end).contains(mark.allow)
+        else {
+            throw PatchfinderError.noCandidate("\(Self.name) validator mark check")
+        }
+        let entitled = try entitlementAllowTarget(
+            refs: entitlementRefs, function: function, end: end, image: image
+        )
+        guard entitled == mark.allow else {
+            throw PatchfinderError.invalidPatch(
+                id: Self.name,
+                reason: "validator TBNZ targets \(mark.allow.hex) but the entitlement allows at \(entitled.hex)"
+            )
+        }
+        return Validator(function: function, site: mark.site, allow: mark.allow)
+    }
+
     // MARK: - Shared shapes
 
     /// `ADD Xk,Xn,#0x30 ; LDARB Wt,[Xk] ; TBNZ Wt,#0,allow` with the TBNZ at
-    /// `site`. The acquire load of byte +0x30 is how the handler consumes the
+    /// `site`. The acquire load of byte +0x30 is how both readers consume the
     /// address-space mark; requiring the register chain stops an unrelated
     /// TBNZ that happens to sit nearby from matching.
     private func markCheck(
