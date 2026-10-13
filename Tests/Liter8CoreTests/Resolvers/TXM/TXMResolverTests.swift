@@ -40,7 +40,7 @@ final class TXMResolverTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.offset)), Set([0x2BCD4, 0x2BCD8, 0x2BA58]))
     }
 
-    // MARK: - Debug mapping (opt-in, fw get-boot --tweaks)
+    // MARK: - Debug mapping (every fw get-boot boot)
 
     /// The three allow branches, each becoming a B to the TBNZ's own target:
     /// +0x18, +0x38 and +0xEC, which is why the replacements are fixed here.

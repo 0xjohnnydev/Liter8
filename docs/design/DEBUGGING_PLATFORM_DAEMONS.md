@@ -14,12 +14,12 @@ behind what that stage does.
 | attach to a platform daemon, symbolicated `bt`, registers, `memory read`, `image lookup` | works |
 | hardware breakpoints, `breakpoint set -H` | works |
 | log-level tracing, `oslog --debug -p <daemon>` | works |
-| software breakpoints, plain `breakpoint set` | silently never fire (not retested on a `--tweaks` boot) |
-| inline hooks, Substrate-style `MSHookFunction` | work on a `fw get-boot --tweaks` boot; killed on a stock boot |
+| software breakpoints, plain `breakpoint set` | silently never fire (not retested on a `txm boot-debug` boot) |
+| inline hooks, Substrate-style `MSHookFunction` | work; killed on stock TXM |
 
-Nothing in the firmware patch set is required for the debugging rows; they work on the
-stock Liter8 boot plans. Inline hooks are the exception: they need the `txm boot-debug`
-plan that `--tweaks` selects (see `USING_TWEAKS.md`).
+Nothing in the firmware patch set is required for the debugging rows; they work on
+stock-signing plans too. Inline hooks are the exception: they need the `txm boot-debug`
+plan, which every `fw get-boot` boot carries (see `USING_TWEAKS.md`).
 
 ## The code signing monitor is TXM, not XNU
 
@@ -163,8 +163,8 @@ completely stock system.
 For inline hooks this was not a dead end, only incomplete. The SIGBUS came from the old
 probe faulting on its own page, and a third TXM branch, the debug-mapping validator's
 read of the same address-space mark, was still refusing the write silently. With all
-three, an ordinary process runs patched code; that is the `txm boot-debug` plan behind
-`fw get-boot --tweaks`.
+three, an ordinary process runs patched code; that is the `txm boot-debug` plan that
+every `fw get-boot` boot carries.
 
 ## Methodology warnings
 

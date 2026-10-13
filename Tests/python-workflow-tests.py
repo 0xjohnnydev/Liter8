@@ -1155,20 +1155,13 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(manifest["txmPlan"], "boot-debug")
         self.assertEqual(validate_boot_set(fixture_context, "normal"), self.work / "Ramdisk")
 
-    def test_tweaks_select_both_code_signing_relaxations(self):
-        self.assertEqual(
-            normal_boot_plans(patch_txm=True, tweak_hooks=True), ("boot-jit", "boot-debug")
-        )
-
-    def test_default_boot_keeps_both_reviewed_plans(self):
-        self.assertEqual(
-            normal_boot_plans(patch_txm=True, tweak_hooks=False), ("boot-public", "boot")
-        )
+    def test_normal_boot_is_built_for_function_hooks(self):
+        # No switch: every normal boot carries both code-signing relaxations.
+        self.assertEqual(normal_boot_plans(patch_txm=True), ("boot-jit", "boot-debug"))
 
     def test_no_txm_plan_without_txm_in_the_identity(self):
-        # j171aap has no SPTM/TXM: --tweaks there is the kernel half only.
-        self.assertEqual(normal_boot_plans(patch_txm=False, tweak_hooks=True), ("boot-jit", None))
-        self.assertEqual(normal_boot_plans(patch_txm=False, tweak_hooks=False), ("boot-public", None))
+        # j171aap has no SPTM/TXM: only the kernel half applies there.
+        self.assertEqual(normal_boot_plans(patch_txm=False), ("boot-jit", None))
 
     def test_boot_sequence_uses_only_firmware_in_the_identity(self):
         # The j171aap 23H30 erase identity has no SPTM/TXM, PMP or WCH, and its

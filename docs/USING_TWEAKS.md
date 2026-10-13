@@ -3,14 +3,14 @@
 ElleKit is registered with dpkg, so a package declaring `Depends: mobilesubstrate`
 configures and PreferenceLoader panes render.
 
-ObjC hooks (`%hook`) work on any boot. C function hooks (`MSHookFunction`,
-`%hookf`, `EKHook`) need a boot built with `fw get-boot --tweaks`: stock TXM refuses
-to let a patched code page execute again, and `--tweaks` builds TXM that allows it.
+ObjC hooks (`%hook`) and C function hooks (`MSHookFunction`, `%hookf`, `EKHook`)
+both work. Stock TXM refuses to let a patched code page execute again; every boot
+`fw get-boot` builds carries TXM that allows it.
 
 | works | doesn't |
 |---|---|
-| `%hook`, `MSHookMessageEx` | C hooks on a boot built without `--tweaks` |
-| `MSHookFunction` / `%hookf` on a `--tweaks` boot | C hooks on tiny functions (see below) |
+| `%hook`, `MSHookMessageEx` | C hooks on tiny functions (see below) |
+| `MSHookFunction` / `%hookf` | |
 | PreferenceLoader panes, AppSync | |
 
 Tiny functions: ElleKit needs 4 instructions before the target's first `ret` or

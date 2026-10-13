@@ -89,21 +89,18 @@ def has_txm(components: dict[str, str], mode: str) -> bool:
     return has_monitor
 
 
-def normal_boot_plans(*, patch_txm: bool, tweak_hooks: bool) -> tuple[str, str | None]:
+def normal_boot_plans(*, patch_txm: bool) -> tuple[str, str | None]:
     """Kernel and TXM plans for a normal boot, as (kernel_plan, txm_plan).
 
-    fw get-boot --tweaks is one switch for runtime function hooks, and both
-    halves are opt-in because they weaken code signing for every process. Each
-    covers one code-signing monitor and is inert where that monitor is absent:
-    kernel boot-jit carries the PPL patches (only a kernel profile that opts in
-    gets any), and txm boot-debug lets TXM approve the debug mapping a modified
-    code page needs before it can execute again. No TXM in the identity means no
-    TXM plan at all.
+    Every normal boot is built for runtime function hooks, by operator
+    decision; there is no switch. Both plans weaken code signing for every
+    process, and each covers one code-signing monitor and is inert where that
+    monitor is absent: kernel boot-jit carries the PPL patches (only a kernel
+    profile that opts in gets any, so on n104 it equals boot-public), and txm
+    boot-debug lets TXM approve the debug mapping a modified code page needs
+    before it can execute again. No TXM in the identity means no TXM plan.
     """
-    kernel_plan = "boot-jit" if tweak_hooks else "boot-public"
-    if not patch_txm:
-        return kernel_plan, None
-    return kernel_plan, "boot-debug" if tweak_hooks else "boot"
+    return "boot-jit", "boot-debug" if patch_txm else None
 
 
 def ticket_from_environment() -> Path:
@@ -197,10 +194,7 @@ def build_normal_boot() -> None:
         optional_firmware=context.optional_passthrough_firmware,
     )
     patch_txm = has_txm(context.components, "normal")
-    kernel_plan, txm_plan = normal_boot_plans(
-        patch_txm=patch_txm,
-        tweak_hooks=os.environ.get("LITER8_ENABLE_TWEAK_HOOKS") == "1",
-    )
+    kernel_plan, txm_plan = normal_boot_plans(patch_txm=patch_txm)
 
     # Build beside .liter8 first. A failed resolver or signing step leaves the
     # operator's previous Ramdisk directory intact.

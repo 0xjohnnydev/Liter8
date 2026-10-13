@@ -25,9 +25,9 @@ public struct TXMBootResolver: Sendable {
     }
 }
 
-/// Opt-in normal-boot plan for runtime function hooks: the boot plan plus the
-/// three debug-mapping branches. Kept separate because it lets every process
-/// map modified code, so a boot asks for it (`fw get-boot --tweaks`).
+/// Normal-boot plan for runtime function hooks: the boot plan plus the three
+/// debug-mapping branches. `fw get-boot` always builds this one; `boot` stays a
+/// separate plan because this lets every process map modified code.
 public struct TXMBootDebugResolver: Sendable {
     public static let name = "txm-boot-debug"
     public init() {}
