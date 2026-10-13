@@ -43,8 +43,25 @@ Remove the file to turn either off.
 
 Three things to remember:
 
-1. Injection is session-bound. A reboot disables it. Every boot: `lhookctl enable`.
+1. Injection is enabled by default, because `fw finalize` creates
+   `/var/jb/.lhook_autoenable`. At every boot, once SpringBoard has been up for
+   20 s, the boot job enables injection and resprings once so SpringBoard tweaks
+   load. Manual control for the current boot:
+
+   ```sh
+   lhookctl disable    # off until enabled again or the next boot; respring to unload
+   lhookctl enable     # on again; respring so SpringBoard picks tweaks up
+   ```
+
+   To stop the boot-time enable, `rm /var/jb/.lhook_autoenable` (re-running
+   `fw finalize` puts it back). If a tweak misbehaves, SSH still works:
+   `lhookctl disable`, then respring.
 2. Tweaks on the Data volume are free to change: drop a dylib and plist in
    `/var/jb/usr/lib/TweakInject/` and respawn the target. No DFU needed.
 3. Anything in `/usr/lib` or `/sbin` costs a DFU cycle, because the System volume
    is sealed once booted.
+
+SSH commands see the bootstrap: `ssh root@… dpkg -i …` (and Theos's `make install`)
+works without exporting PATH. Dropbear's fixed PATH names `/tmp/bin` and
+`/tmp/usr/bin`, and the boot job links them to `/var/jb/usr/bin` and
+`/var/jb/usr/sbin` every boot.

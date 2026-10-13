@@ -551,6 +551,46 @@ else
     fi
 fi
 
+# Injection is on by default: at every boot l8boot, run by the com.jbboot job,
+# enables it once SpringBoard is up and resprings once, provided this file
+# exists, root-owned and not group or other writable (the predicate every
+# liter8 marker uses). lhookctl still turns it off or on for the current boot.
+# Removing the file stops the boot-time enable; that is a choice, not a fault,
+# so --check reports it rather than failing, and re-running finalize puts it back.
+say "injection auto-enable"
+AUTO_MARKER=/var/jb/.lhook_autoenable
+auto_state=$(sh_dev "$RPATH
+    [ -x /usr/local/bin/l8boot ] || echo NO_HELPER
+    if [ -L $AUTO_MARKER ]; then echo BAD
+    elif [ ! -e $AUTO_MARKER ]; then echo ABSENT
+    else
+        set -- \$(ls -ln $AUTO_MARKER); m=\${1%[.+]}
+        case \"\$m\" in -*) ;; *) echo BAD; exit 0 ;; esac
+        case \"\$m\" in ?????w*|????????w*) echo BAD; exit 0 ;; esac
+        [ \"\$3\" = 0 ] && echo OK || echo BAD
+    fi" < /dev/null 2>/dev/null) || true
+
+if [[ "$auto_state" == *NO_HELPER* ]]; then
+    skip "INCOMPLETE: /usr/local/bin/l8boot is missing; re-provision from SSHRD so the boot job can enable injection and set up the SSH PATH"
+    FINALIZE_INCOMPLETE=1
+fi
+if [[ "$auto_state" == *OK* ]]; then
+    ok "on: injection is enabled at every boot once SpringBoard is up"
+elif [[ "$auto_state" != *ABSENT* && "$auto_state" != *BAD* ]]; then
+    (( CHECK_ONLY )) || die "could not read $AUTO_MARKER"
+    skip "INCOMPLETE: could not read $AUTO_MARKER"
+    FINALIZE_INCOMPLETE=1
+elif (( CHECK_ONLY )) && [[ "$auto_state" == *ABSENT* ]]; then
+    skip "off: $AUTO_MARKER is absent, so injection needs lhookctl enable each boot"
+elif (( CHECK_ONLY )); then
+    skip "INCOMPLETE: $AUTO_MARKER is not a root-owned file that only root can write; l8boot ignores it"
+    FINALIZE_INCOMPLETE=1
+else
+    sh_dev "$RPATH; rm -f $AUTO_MARKER && : > $AUTO_MARKER && chmod 0644 $AUTO_MARKER" < /dev/null \
+        || die "could not create $AUTO_MARKER"
+    ok "on: created $AUTO_MARKER; injection is enabled at every boot once SpringBoard is up"
+fi
+
 say "one-time System application registration"
 if sh_dev "$RPATH; [ -f '$REGISTRATION_MARKER' ]" >/dev/null 2>&1; then
     skip "already completed"

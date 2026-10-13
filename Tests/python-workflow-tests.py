@@ -174,6 +174,17 @@ class DeveloperDiskImageJobTests(unittest.TestCase):
         with self.assertRaisesRegex(DDIJobShapeError, "expected 1"):
             validate_ddi_document(document, expected_pristine=1)
 
+    def test_boot_helper_is_built_installed_verified_and_run(self):
+        builder = (DEVICE / "fetch_payloads.sh").read_text()
+        provisioner = (DEVICE / "sshrd_provision.sh").read_text()
+        jbboot = (DEVICE / "boot/jbboot.sh").read_text()
+        self.assertIn("cd boothelper", builder)
+        self.assertIn("put boothelper/l8boot /mnt1/usr/local/bin/l8boot.usbl8r-new", provisioner)
+        self.assertIn("l8boot readback hash mismatch", provisioner)
+        self.assertIn('note "l8boot System"', provisioner)
+        # The job execs pfwatch and never returns, so l8boot has to come first.
+        self.assertLess(jbboot.index('"$L8BOOT" >>'), jbboot.index('exec "$PFWATCH"'))
+
     def test_cache_build_and_device_verification_require_the_job(self):
         builder = (DEVICE / "fetch_payloads.sh").read_text()
         provisioner = (DEVICE / "sshrd_provision.sh").read_text()

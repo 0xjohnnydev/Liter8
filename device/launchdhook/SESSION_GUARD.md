@@ -6,8 +6,13 @@ That is a confirmed behavior of the previous code; it is not yet a proven
 cause of the observed boot failure.
 
 The new hook requires the file to contain the current `kern.bootsessionuuid`.
-Old empty files and previous-session UUIDs fail closed. There is no automatic
-enable during boot. After the interface is usable, root runs:
+Old empty files and previous-session UUIDs fail closed. Nothing enables it at
+early boot. The automatic enable, on by default, keeps to that: while
+`/var/jb/.lhook_autoenable` exists (created by `fw finalize`; root-owned, not
+group or other writable), `l8boot` (run by `jbboot.sh`) waits until SpringBoard
+has been up for 20 s, then writes the session flag exactly as `lhookctl enable`
+does and restarts SpringBoard once. For manual control, or without that file,
+after the interface is usable, root runs:
 
 ```sh
 /var/jb/usr/bin/lhookctl status

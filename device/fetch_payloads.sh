@@ -631,6 +631,11 @@ if wants helpers; then
     else
         die "DeveloperDiskImage service watcher build failed"
     fi
+    if ( cd boothelper && ./build.sh >/dev/null 2>&1 ); then
+        ok "per-boot helper built (SSH PATH links, lhook auto-enable)"
+    else
+        die "per-boot helper build failed"
+    fi
 
     uicache_asset="$WORK/uicache27-$UICACHE_VER"
     fetch_cached "$uicache_asset" "$UICACHE_URL" \
@@ -756,7 +761,7 @@ for p in "$OUT/Sileo.app/Sileo" "$OUT/Sileo.app/giveMeRoot" \
          "$OUT/tweaks/TweakInject/l8localauth.dylib" \
          "$OUT/tweaks/TweakInject/l8persona.dylib" \
          photodiag/photodiag spawnprobe/personaalloc appreg/appreg \
-         photoforce/pfruntimeprobe photoforce/pfwatch ddiwatch/ddiwatch \
+         photoforce/pfruntimeprobe photoforce/pfwatch ddiwatch/ddiwatch boothelper/l8boot \
          "$OUT/debugserver"; do
     if [ -f "$p" ]; then
         # "$BASE" quoted separately inside ${..}: unquoted it is treated as a
