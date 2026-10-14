@@ -139,6 +139,8 @@ pwn DFU again.
 .build/release/liter8 fw boot
 ```
 
+On a fresh restore, take the SIM out before going through Setup. With it in, Setup on `24B5110a` hung after the language screen: cellular data doesn't work on this CFW, so a network step waits on timeouts. Without it, expect one spinner of about two minutes, then it carries on. Put the SIM back once you're on the home screen.
+
 `fw get-boot` builds TXM with its code-signing policy flags turned on (any signature, unrestricted local signing, relaxed profile trust, CS enforcement disabled, unrestricted task_for_pid) plus the patches C function hooks need. CoreTrust stays enforced. The boot manifest records it as `txmPlan: boot-permissive`.
 
 ### 7. Finish the bootstrap

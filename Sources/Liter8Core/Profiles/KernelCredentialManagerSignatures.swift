@@ -501,9 +501,10 @@ enum KernelCredentialManagerSignatures {
     ///
     /// Shape-identical to beta 3: `acm-probe` with `release24B5099fV1` against
     /// this kernelcache matches twenty-four entries at exactly one site, and
-    /// `updateAnalytics` and `unlockItem` at two sites each. Four entries carry
-    /// `needsScoring`; `sendSEPCommand` and `setPowerStateGated` still match
-    /// uniquely, so only the two ambiguous ones need it. Recorded as its own family for
+    /// `updateAnalytics` and `unlockItem` at two sites each. Only those two use
+    /// `needsScoring`: `sendSEPCommand` and `setPowerStateGated`, scored in the
+    /// earlier families, match uniquely here, so they take the strict exact
+    /// match and a drifted body fails closed. Recorded as its own family for
     /// the same reason the earlier seeds were: the words differ in the fields
     /// `allowDataLayoutDrift` masks.
     ///
@@ -537,7 +538,7 @@ enum KernelCredentialManagerSignatures {
             // beta 4 file offset 0x2103ca8
             .init("performSCRDInitialization", words: "d503237f d10203ff a90557f6 a9064ff4 a9077bfd 9101c3fd aa0003f3 9000f3b4 3971c288 7100291f 540002e8 39423268 360001a8 f9400270 aa1303f1 f2f9b431"),
             // beta 4 file offset 0x2103f70
-            .init("sendSEPCommand", words: "d503237f d10443ff a90b6ffc a90c67fa a90d5ff8 a90e57f6 a90f4ff4 a9107bfd 910403fd aa0703fc aa0603f7 aa0503f9 aa0403f5 aa0303f8 aa0203f6 aa0103f4 aa0003f3 f81a03a4 9000f3bb 3971c368 7100291f 540002e8 39423268 360001a8 f9400270 aa1303f1 f2f9b431 dac11a30 d2803d11 8b110210 f9400208 aa1303e0", needsScoring: true),
+            .init("sendSEPCommand", words: "d503237f d10443ff a90b6ffc a90c67fa a90d5ff8 a90e57f6 a90f4ff4 a9107bfd 910403fd aa0703fc aa0603f7 aa0503f9 aa0403f5 aa0303f8 aa0203f6 aa0103f4 aa0003f3 f81a03a4 9000f3bb 3971c368 7100291f 540002e8 39423268 360001a8 f9400270 aa1303f1 f2f9b431 dac11a30 d2803d11 8b110210 f9400208 aa1303e0"),
             // beta 4 file offset 0x21049ec
             .init("_setPropertiesGated", words: "d503237f d10203ff a90367fa a9045ff8 a90557f6 a9064ff4 a9077bfd 9101c3fd aa0103f3 aa0003f4 f0ff6ea8 f946c508 f9400101 aa1303e0 94003dca b4001640"),
             // beta 4 file offset 0x2104e78
@@ -565,7 +566,7 @@ enum KernelCredentialManagerSignatures {
             // beta 4 file offset 0x2107574
             .init("sepManagerMatchedGated", words: "d503237f d10203ff a90367fa a9045ff8 a90557f6 a9064ff4 a9077bfd 9101c3fd aa0003f3 9000f388 3971c108 7100a11f 540002e8 39423268 360001a8 f9400270"),
             // beta 4 file offset 0x2113a18
-            .init("setPowerStateGated", words: "d503237f d101c3ff a9035ff8 a90457f6 a9054ff4 a9067bfd 910183fd aa0103f4 aa0003f3 9000f337 3971c2e8 d0ff2d56 910daad6 7100291f 54000268 39423268 36000188 97ffd058 f2f9b431 dac11a30 d2803d11 8b110210 f9400208 aa1303e0 d2800001 f2e19390 d73f0910 14000002 97ffd047 a9005be0 b0ff2cc0 91225400", needsScoring: true),
+            .init("setPowerStateGated", words: "d503237f d101c3ff a9035ff8 a90457f6 a9054ff4 a9067bfd 910183fd aa0103f4 aa0003f3 9000f337 3971c2e8 d0ff2d56 910daad6 7100291f 54000268 39423268 36000188 97ffd058 f2f9b431 dac11a30 d2803d11 8b110210 f9400208 aa1303e0 d2800001 f2e19390 d73f0910 14000002 97ffd047 a9005be0 b0ff2cc0 91225400"),
         ]
     )
 
