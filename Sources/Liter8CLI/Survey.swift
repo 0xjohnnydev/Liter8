@@ -69,8 +69,9 @@ enum Survey {
         }
 
         // Opt-in kernel plans (PPL, code-signing-invalid) run only when this
-        // profile registers them; elsewhere their "no candidate" is expected,
-        // not a porting failure.
+        // profile registers them; on a known profile without the opt-in their
+        // "no candidate" is expected, not a porting failure. An unregistered
+        // kernel still probes them.
         let kernelProfile = candidates.first(where: { $0.fourcc == "krnl" })
             .flatMap { KernelResolverProfileRegistry.detect(in: $0.image) }
 
@@ -84,11 +85,10 @@ enum Survey {
                                     note: "skipped, needs \(argument)"))
                     continue
                 }
-                if component == "kernel",
-                   let key = KernelOptInResolvers.optInKey(forResolver: resolver),
-                   kernelProfile?.variants(for: key) == nil {
+                if component == "kernel", let profile = kernelProfile,
+                   KernelOptInResolvers.isUnused(resolver: resolver, by: profile) {
                     rows.append(Row(component: component, plan: plan, count: nil,
-                                    note: "skipped, not used by \(kernelProfile?.id ?? "an unidentified kernel")"))
+                                    note: "skipped, not used by \(profile.id)"))
                     continue
                 }
                 guard let candidate = artifact(for: component, plan: plan, in: candidates) else {

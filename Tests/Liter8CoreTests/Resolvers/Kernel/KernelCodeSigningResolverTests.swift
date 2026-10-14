@@ -438,6 +438,27 @@ final class KernelCodeSigningResolverTests: XCTestCase {
         XCTAssertNil(KernelOptInResolvers.optInKey(forResolver: KernelBootJITResolver.name))
     }
 
+    /// survey skips an opt-in plan only for a detected profile without the
+    /// opt-in. An unregistered kernel is the porting case and still probes.
+    func testSurveySkipsOptInPlansOnlyForAKnownProfileWithoutTheOptIn() throws {
+        let name = KernelPPLAllowInvalidResolver.name
+        XCTAssertFalse(KernelOptInResolvers.isUnused(resolver: name, by: nil))
+
+        let optedIn = KernelResolverProfile(
+            id: "opted-in", productVersion: "test", builds: [], boards: [], component: "",
+            embeddedFingerprint: fingerprint,
+            resolverVariants: [KernelCodeSigningResolver.variantKey:
+                ResolverVariantProfile(signature: "test", payload: "test")]
+        )
+        XCTAssertFalse(KernelOptInResolvers.isUnused(resolver: name, by: optedIn))
+
+        let notOptedIn = try XCTUnwrap(KernelResolverProfileRegistry.profiles.first {
+            $0.variants(for: KernelCodeSigningResolver.variantKey) == nil
+        })
+        XCTAssertTrue(KernelOptInResolvers.isUnused(resolver: name, by: notOptedIn))
+        XCTAssertFalse(KernelOptInResolvers.isUnused(resolver: KernelExceptionPortResolver.name, by: notOptedIn))
+    }
+
     func testCompositeRecordsAreEmptyWithoutAProfileOptIn() throws {
         // An image with no recognised fingerprint is not opted in.
         var data = Data(count: 0x4000)
