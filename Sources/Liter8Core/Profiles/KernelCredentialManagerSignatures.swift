@@ -499,9 +499,11 @@ enum KernelCredentialManagerSignatures {
 
     /// iOS 27.2 beta 4 `24B5110a`.
     ///
-    /// Shape-identical to beta 3: probing `release24B5099fV1` against this
-    /// kernelcache matches all twenty-four exact entries, with the usual two
-    /// positionally scored entries ambiguous. Recorded as its own family for
+    /// Shape-identical to beta 3: `acm-probe` with `release24B5099fV1` against
+    /// this kernelcache matches twenty-four entries at exactly one site, and
+    /// `updateAnalytics` and `unlockItem` at two sites each. Four entries carry
+    /// `needsScoring`; `sendSEPCommand` and `setPowerStateGated` still match
+    /// uniquely, so only the two ambiguous ones need it. Recorded as its own family for
     /// the same reason the earlier seeds were: the words differ in the fields
     /// `allowDataLayoutDrift` masks.
     ///

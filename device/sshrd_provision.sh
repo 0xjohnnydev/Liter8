@@ -1053,9 +1053,13 @@ done
 echo DONE_OK
 ' "could not create a tweak destination directory"
     tweak_dirs=$(tweak_dir_faults)
+    # Deliberately not repaired here: a directory another account could write
+    # may already hold a planted dylib, and fixing its mode would keep it. A run
+    # from before the umask fix leaves these 0777; check their contents, then
+    # chmod go-w them and rerun.
     [ -z "$tweak_dirs" ] || {
         printf '%s\n' "$tweak_dirs" | sed 's/^/        /'
-        die "a tweak destination is unsafe or could not be read"
+        die "a tweak destination is unsafe or could not be read (if a pre-umask-fix run made it 0777, check its contents, chmod go-w, rerun)"
     }
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with
