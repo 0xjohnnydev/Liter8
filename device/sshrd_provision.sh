@@ -100,8 +100,11 @@ sh_dev() {
     while [ "$_L8_SSH_TRY" -le "$SSH_ATTEMPTS" ]; do
         : > "$_L8_SSH_OUT"
         : > "$_L8_SSH_ERR"
+        # The SSH ramdisk shell runs with umask 0000, so every directory a
+        # step creates implicitly would come out world-writable (777). Set the
+        # usual 022 here rather than trusting each mkdir to chmod.
         # shellcheck disable=SC2086  # $SSHOPT is an option LIST and must word-split
-        if timeout 900 "$SSHPASS" -p "$PW" ssh $SSHOPT "$DEV" "$@" \
+        if timeout 900 "$SSHPASS" -p "$PW" ssh $SSHOPT "$DEV" "umask 022;" "$@" \
                 > "$_L8_SSH_OUT" 2> "$_L8_SSH_ERR"; then
             cat "$_L8_SSH_OUT"
             rm -f "$_L8_SSH_OUT" "$_L8_SSH_ERR"
@@ -147,7 +150,7 @@ put() {
     while :; do
         : > "$_L8_PUT_ERR"
         # shellcheck disable=SC2086  # same: $SSHOPT must word-split
-        if timeout 900 "$SSHPASS" -p "$PW" ssh $SSHOPT "$DEV" "cat > $2" \
+        if timeout 900 "$SSHPASS" -p "$PW" ssh $SSHOPT "$DEV" "umask 022; cat > $2" \
                 < "$1" 2> "$_L8_PUT_ERR"; then
             rm -f "$_L8_PUT_ERR"
             break
@@ -1050,9 +1053,13 @@ done
 echo DONE_OK
 ' "could not create a tweak destination directory"
     tweak_dirs=$(tweak_dir_faults)
+    # Deliberately not repaired here: a directory another account could write
+    # may already hold a planted dylib, and fixing its mode would keep it. A run
+    # from before the umask fix leaves these 0777; check their contents, then
+    # chmod go-w them and rerun.
     [ -z "$tweak_dirs" ] || {
         printf '%s\n' "$tweak_dirs" | sed 's/^/        /'
-        die "a tweak destination is unsafe or could not be read"
+        die "a tweak destination is unsafe or could not be read (if a pre-umask-fix run made it 0777, check its contents, chmod go-w, rerun)"
     }
 
     # TWEAK_SET above is deliberately the minimum that makes injection work with

@@ -6,3 +6,5 @@ usbmuxd
 mobile_obliterator
 restored_external
 aslmanager
+# Traps in os_log_set_client_type at launch when injected (n104/24B5110a).
+GSSCred

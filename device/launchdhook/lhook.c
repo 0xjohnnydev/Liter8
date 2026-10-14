@@ -101,10 +101,13 @@ static const char *kHardDeny[] = {
     NULL
 };
 
-/* Conservative fallback for services unrelated to tweak loading. */
+/* Conservative fallback for services unrelated to tweak loading. GSSCred traps in
+ * os_log_set_client_type at launch when injected, and launchd relaunches it every
+ * few seconds (measured on n104/24B5110a; denying it stopped the crashes). */
 static const char *kDefaultDeny[] = {
     "diskarbitrationd", "syslogd", "usbmuxd",
     "mobile_obliterator", "restored_external", "aslmanager",
+    "GSSCred",
     NULL
 };
 

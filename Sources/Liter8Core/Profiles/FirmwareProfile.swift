@@ -211,6 +211,23 @@ public enum KernelResolverProfileRegistry {
                 ),
             ]
         ),
+        KernelResolverProfile(
+            // Fourth 27.2 seed, fourth XNU string.
+            id: "ios272b4-24B5110a-n104ap",
+            productVersion: "27.2 beta 4",
+            builds: ["24B5110a"],
+            boards: ["n104ap"],
+            component: "kernelcache.release.iphone12b",
+            embeddedFingerprint: "xnu-13432.42.3~13/RELEASE_ARM64_T8030",
+            resolverVariants: [
+                // Shape-identical to beta 3; see
+                // KernelCredentialManagerSignatures.release24B5110aV1.
+                "kernel-credential-manager": ResolverVariantProfile(
+                    signature: "ios272b4-24B5110a-acm-v1",
+                    payload: "acm-return-success-v1"
+                ),
+            ]
+        ),
     ]
 
     /// Detect a profile using evidence embedded in the artifact itself.
