@@ -338,6 +338,32 @@ public enum DeviceWorkflowRegistry {
                 restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
             )
         ),
+        // iOS 27.2 beta 4. Guards measured from this build's own rootfs with
+        // `survey --guards`: one more launch daemon (733) and one fewer Setup
+        // controller method (64) than beta 3. Every resolver plan used on n104
+        // resolves. On an iPhone 11: erase restore, SSHRD provisioning, normal
+        // boot, repeat boot, finalization and setup-debugger passed. It stays
+        // experimental while one userspace restart of unknown cause is open.
+        // The boot plan is n104's display behaviour, the same as beta 3.
+        DeviceWorkflowProfile(
+            id: "iphone12,1-n104ap-24B5110a",
+            productVersion: "27.2",
+            build: "24B5110a",
+            productType: "iPhone12,1",
+            deviceClass: "n104ap",
+            chipID: 0x8030,
+            boardID: 0x04,
+            extractedDirectoryName: "iPhone12,1_27.2_24B5110a_Restore",
+            validationState: .experimental,
+            launchdSHA256: "6a4626353d59d94b8d9e8ba179ccde8707d83473c2919ce8fd16175105a47647",
+            launchdCacheSHA256: "40352a92f70de21e2f0dc8547606a033feeddf941b504bc236156e6fda57d37f",
+            launchdCacheDaemonCount: 733,
+            setupControllerMethodCount: 64,
+            bootPlan: DeviceBootPlan(
+                normalIBSSAdditionalPlans: [.skipDisplayInitialization],
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
+            )
+        ),
         // iOS 27.0.1, device-validated on an iPhone 11: erase restore, SSHRD
         // provisioning, normal boot, repeat boot, Procursus finalization,
         // Dropbear, persona 99, icon token and PosterBoard repair all passed.
