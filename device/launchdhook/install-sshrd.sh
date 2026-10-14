@@ -78,4 +78,16 @@ chmod 0755 /mnt1/usr/lib/lhook.session-new /mnt2/jb/usr/bin/lhookctl.session-new
 mv -f /mnt2/jb/usr/bin/lhookctl.session-new /mnt2/jb/usr/bin/lhookctl &&
 mv -f /mnt1/usr/lib/lhook.session-new /mnt1/usr/lib/lhook &&
 sync'
+# An existing deny file overrides lhook's built-in defaults, so a default added
+# to this tree (GSSCred) would never apply on a device that already has one.
+# Append what this tree ships and the device lacks, never remove anything: the
+# file is the operator's to edit. The leading newline covers a file without a
+# trailing one; blank lines are ignored by the parser.
+"$SSH" '
+f=/mnt2/jb/etc/lhook.deny
+[ -f "$f" ] || exit 0
+while read -r name; do
+    case "$name" in ""|"#"*) continue ;; esac
+    grep -qx "$name" "$f" || { printf "\n%s\n" "$name" >> "$f" && echo "deny list: added $name"; }
+done' < lhook.deny
 echo 'Hook installed with readback verification. Boot normally, then run lhookctl enable after the interface is up.'
