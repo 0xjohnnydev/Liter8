@@ -84,7 +84,8 @@ sshdev() {
     # Not named `status`: zsh reserves that as a read-only alias for $?.
     local -i attempt rc
     for attempt in 1 2 3 4; do
-        "$SSHPASS" -p alpine ssh "${SSH_OPTS[@]}" root@localhost "$@"
+        # SSHRD's shell has umask 0000; see sh_dev in sshrd_provision.sh.
+        "$SSHPASS" -p alpine ssh "${SSH_OPTS[@]}" root@localhost "umask 022;" "$@"
         rc=$?
         (( rc == 255 )) || return $rc
         sleep 1
@@ -110,7 +111,7 @@ sshdev_send() {
     local src=$1 remote=$2
     local -i attempt
     for attempt in 1 2 3 4; do
-        "$SSHPASS" -p alpine ssh "${SSH_OPTS[@]}" root@localhost "$remote" < "$src" && return 0
+        "$SSHPASS" -p alpine ssh "${SSH_OPTS[@]}" root@localhost "umask 022; $remote" < "$src" && return 0
         sleep 1
     done
     return 1
