@@ -425,6 +425,19 @@ final class KernelCodeSigningResolverTests: XCTestCase {
 
     // MARK: - opt-in gate
 
+    /// survey skips these plans on a profile without the key; the keys must be
+    /// the same ones the composed plans gate on.
+    func testOptInKeysMatchTheComposedPlanGates() {
+        XCTAssertEqual(KernelOptInResolvers.optInKey(forResolver: KernelPPLTrustCacheResolver.name),
+                       KernelPPLTrustCacheResolver.name)
+        for name in [KernelPPLAllowInvalidResolver.name, KernelVMFaultCSBypassResolver.name,
+                     KernelVMMapProtectResolver.name] {
+            XCTAssertEqual(KernelOptInResolvers.optInKey(forResolver: name), KernelCodeSigningResolver.variantKey)
+        }
+        XCTAssertNil(KernelOptInResolvers.optInKey(forResolver: KernelExceptionPortResolver.name))
+        XCTAssertNil(KernelOptInResolvers.optInKey(forResolver: KernelBootJITResolver.name))
+    }
+
     func testCompositeRecordsAreEmptyWithoutAProfileOptIn() throws {
         // An image with no recognised fingerprint is not opted in.
         var data = Data(count: 0x4000)

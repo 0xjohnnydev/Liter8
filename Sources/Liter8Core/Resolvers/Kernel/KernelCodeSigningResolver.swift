@@ -39,6 +39,23 @@ public enum KernelCodeSigningResolver {
     }
 }
 
+/// Kernel resolvers that composed plans use only when the detected kernel
+/// profile opts in, keyed by the profile variant that opts in. `survey` asks
+/// this so a plan a profile never uses reads as not applicable, not failed.
+public enum KernelOptInResolvers {
+    public static func optInKey(forResolver name: String) -> String? {
+        switch name {
+        case KernelPPLTrustCacheResolver.name:
+            return KernelPPLTrustCacheResolver.name
+        case KernelPPLAllowInvalidResolver.name, KernelVMFaultCSBypassResolver.name,
+             KernelVMMapProtectResolver.name:
+            return KernelCodeSigningResolver.variantKey
+        default:
+            return nil
+        }
+    }
+}
+
 // MARK: - PPL: every pmap is created allow-invalid
 
 /// On T8020, PPL (not just AMFI) decides whether a page whose hash no longer

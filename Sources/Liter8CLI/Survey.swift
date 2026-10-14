@@ -68,6 +68,12 @@ enum Survey {
             reportKernelIdentity(kernel.image)
         }
 
+        // Opt-in kernel plans (PPL, code-signing-invalid) run only when this
+        // profile registers them; elsewhere their "no candidate" is expected,
+        // not a porting failure.
+        let kernelProfile = candidates.first(where: { $0.fourcc == "krnl" })
+            .flatMap { KernelResolverProfileRegistry.detect(in: $0.image) }
+
         var rows: [Row] = []
         for component in ["iboot", "txm", "kernel"] {
             guard let plans = resolverGroups[component] else { continue }
@@ -76,6 +82,13 @@ enum Survey {
                 if let argument = requiresArgument[plan] {
                     rows.append(Row(component: component, plan: plan, count: nil,
                                     note: "skipped, needs \(argument)"))
+                    continue
+                }
+                if component == "kernel",
+                   let key = KernelOptInResolvers.optInKey(forResolver: resolver),
+                   kernelProfile?.variants(for: key) == nil {
+                    rows.append(Row(component: component, plan: plan, count: nil,
+                                    note: "skipped, not used by \(kernelProfile?.id ?? "an unidentified kernel")"))
                     continue
                 }
                 guard let candidate = artifact(for: component, plan: plan, in: candidates) else {
