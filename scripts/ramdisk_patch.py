@@ -9,7 +9,7 @@ import tempfile
 import sys
 from pathlib import Path
 
-from liter8_workflow import Context, WorkflowError, main_guard, run
+from liter8_workflow import Context, WorkflowError, main_guard, run, runnable_tool
 
 
 # These paths and identifiers are stable semantic interfaces inside Apple's
@@ -65,9 +65,11 @@ def patch_ramdisk() -> None:
     context.extract_im4p(pristine, raw)
 
     # Liter8 ships the reviewed public-workflow binary under its original name.
-    ldid = shutil.which("ldid") or shutil.which("ldid_macosx_arm64")
+    ldid = runnable_tool("ldid", "ldid_macosx_arm64")
     if not ldid:
-        raise WorkflowError("ldid is required; install it or place it in Liter8's tools directory")
+        raise WorkflowError(
+            "a runnable ldid is required; install it or place it in Liter8's tools directory"
+        )
 
     device, mount = attach(raw)
     try:

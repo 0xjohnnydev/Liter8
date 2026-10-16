@@ -52,7 +52,7 @@ Anything not in the table fails before it even gets extracted. The profiles don'
 
 ## Building it
 
-You need macOS 14 or newer, Xcode command line tools with Swift 6, and Homebrew.
+You need macOS 14 (untested) or newer, Xcode command line tools with Swift 6, and Homebrew.
 
 ```sh
 brew install \

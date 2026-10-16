@@ -1,18 +1,44 @@
 # Liter8 host tools
 
-What is left here after the unused imports were removed. `gtar`, `ldid` and
-`sshpass` are fallbacks only: every caller resolves the tool from `PATH` first,
-so install them with Homebrew and these copies go unused. They exist because
-the bundled `ldid` is arm64 and the bundled `gtar` and `sshpass` are x86_64,
-which means one of the two Mac architectures always needs Rosetta or a native
-replacement. See https://github.com/Xplo8E/Liter8/issues/2.
+What is left here after the unused imports were removed. The bundled `ldid` is
+arm64 and the bundled `gtar` and `sshpass` are x86_64, so one of the two Mac
+architectures always needs Rosetta or a native replacement. See
+https://github.com/Xplo8E/Liter8/issues/2.
 
 `usbliter8ctl` is the one tool with no substitute. `sshdev` is a convenience
-script for reading device logs by hand, not part of any workflow.
+script for reading device logs by hand, not part of any workflow. `sshpass` is
+no longer called at all: `device/askpass-sshpass` replaced it, and every call
+site names that shim by path.
 
 `make setup` generates an ignored `idevicerestore` here from the pinned
 `vendor/idevicerestore` submodule. The project-specific `irecovery` remains
 unmanaged until its source and build are selected.
+
+## How callers resolve these
+
+**This directory comes first on `PATH`, not last.**
+`Sources/Liter8CLI/FirmwareScriptRunner.swift` prepends it for every Python
+helper and `scripts/device_provision.py` prepends a symlink copy of it for
+every `device/` shell script. That is load-bearing for `idevicerestore`: the
+pinned build here has to beat an unrelated `/usr/local/bin/idevicerestore`
+during an erase restore. It is the opposite of what `gtar` and `sshpass` want,
+and no single ordering satisfies both.
+
+So **ordering is not the guard, runnability is.** A tool resolved by name has
+to be executed before it is trusted: the executable bit is set on a
+wrong-architecture binary and on one whose dynamic libraries have moved, and
+both fail far later with nothing but "Bad CPU type in executable". Three
+implementations of that check exist, one per language:
+
+| Layer | Resolver |
+| --- | --- |
+| Swift | `HostTool.locate(_:requiringRunnable:)`, used by `Preflight` |
+| Python | `liter8_workflow.runnable_tool` |
+| Shell | the `GTAR` and `LDID` probes at the top of `device/sshrd_provision.sh` |
+
+A new caller that resolves a tool by name uses its layer's resolver. A plain
+`shutil.which`, `command -v` or `-x` test will pick the x86_64 `gtar` here
+ahead of a working Homebrew one.
 
 ## Removed
 

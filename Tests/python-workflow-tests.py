@@ -8,6 +8,7 @@ import hashlib
 import io
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-from liter8_workflow import Context, WorkflowError, run  # noqa: E402
+from liter8_workflow import Context, WorkflowError, run, runnable_tool  # noqa: E402
 import measure_guards  # noqa: E402
 from boot_artifacts import (  # noqa: E402
     PASSTHROUGH_IMG4,
@@ -826,6 +827,69 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(payload.is_file())
         self.assertEqual(sha256_file(payload), REVIEWED_PAYLOAD_SHA256)
 
+    @staticmethod
+    def _tool_directory(parent: Path, name: str, body: bytes) -> Path:
+        """Create one PATH directory holding a single executable."""
+        parent.mkdir()
+        tool = parent / name
+        tool.write_bytes(body)
+        tool.chmod(0o755)
+        return tool
+
+    # A fat header advertising zero architecture slices. Every host rejects it
+    # with the same "Bad CPU type in executable" that the x86_64 tools/gtar
+    # produces on an Apple Silicon host without Rosetta, so the test does not
+    # depend on the architecture it runs on.
+    UNRUNNABLE = b"\xca\xfe\xba\xbe\x00\x00\x00\x00"
+
+    def test_runnable_tool_skips_a_binary_this_host_cannot_execute(self):
+        """tools/ comes first on PATH, so the first name match can be unrunnable."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundled = self._tool_directory(root / "tools", "gtar", self.UNRUNNABLE)
+            installed = self._tool_directory(
+                root / "homebrew", "gtar", b"#!/bin/sh\nexit 0\n"
+            )
+            path = os.pathsep.join([str(bundled.parent), str(installed.parent)])
+
+            with patch.dict(os.environ, {"PATH": path}, clear=False):
+                self.assertEqual(runnable_tool("gtar"), str(installed))
+                # shutil.which is what picked the unrunnable copy before.
+                self.assertEqual(shutil.which("gtar", path=path), str(bundled))
+
+    def test_runnable_tool_accepts_a_nonzero_exit_and_honors_name_order(self):
+        """Only the spawn is judged, and an operator's own ldid outranks the bundled one.
+
+        ldid answers --version and exits 0, but 7zz exits 7 and other tools
+        fail without real arguments, so a nonzero status must not disqualify a
+        binary that clearly ran.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundled = self._tool_directory(
+                root / "tools", "ldid_macosx_arm64", b"#!/bin/sh\nexit 0\n"
+            )
+            installed = self._tool_directory(
+                root / "homebrew", "ldid", b"#!/bin/sh\nexit 1\n"
+            )
+            # Bundled directory first, exactly as the workflow orders PATH.
+            path = os.pathsep.join([str(bundled.parent), str(installed.parent)])
+
+            with patch.dict(os.environ, {"PATH": path}, clear=False):
+                self.assertEqual(
+                    runnable_tool("ldid", "ldid_macosx_arm64"), str(installed)
+                )
+
+    def test_runnable_tool_reports_nothing_when_no_candidate_executes(self):
+        """A host with no usable copy must fail before any image work starts."""
+        with tempfile.TemporaryDirectory() as directory:
+            broken = self._tool_directory(
+                Path(directory) / "tools", "gtar", self.UNRUNNABLE
+            )
+
+            with patch.dict(os.environ, {"PATH": str(broken.parent)}, clear=False):
+                self.assertIsNone(runnable_tool("gtar"))
+
     def test_sshrd_privileged_operation_allows_interactive_sudo(self):
         """The workflow must let sudo display its normal password or Touch ID prompt."""
         with (
@@ -834,8 +898,11 @@ class ContextTests(unittest.TestCase):
         ):
             sshrd.privileged(["/usr/bin/hdiutil", "resize", "fixture.dmg"])
 
+        # sudo's env_reset drops the hdiutil setting, so env restores it.
         runner.assert_called_once_with([
             "/usr/bin/sudo",
+            "/usr/bin/env",
+            "com_apple_hdiutil_nodeprecatedwarning=1",
             "/usr/bin/hdiutil",
             "resize",
             "fixture.dmg",
