@@ -20,6 +20,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# macOS 27 deprecated hdiutil's verbs, so each one prints a replacement whose
+# flags it only partly translates. Set in the environment because the helpers
+# also reach hdiutil through bare subprocess.run; export it empty to see the
+# warnings again.
+HDIUTIL_QUIET_VARIABLE = "com_apple_hdiutil_nodeprecatedwarning"
+os.environ.setdefault(HDIUTIL_QUIET_VARIABLE, "1")
+
+# Searched after PATH, which does not always carry either prefix. Keep this in
+# step with HostTool.homebrewBinaryDirectories: a tool Preflight reports as
+# runnable has to be one the helpers can find too.
+HOMEBREW_BINARY_DIRECTORIES = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
 class WorkflowError(RuntimeError):
     """A clear operator-facing workflow failure."""
 
@@ -284,6 +297,58 @@ def required_environment_path(name: str) -> Path:
     if not value:
         raise WorkflowError(f"{name} was not supplied by the Liter8 launcher")
     return Path(value).expanduser().resolve()
+
+
+def _can_execute(executable: str) -> bool:
+    """Can this binary be launched at all on this host?
+
+    Only the spawn is judged. The exit status is ignored because a tool is free
+    to fail on no real arguments, and `ldid` prints its banner and exits 1. An
+    exec failure raises OSError, and a dyld failure kills the child with a
+    signal rather than letting it exit, which is a negative return code.
+    """
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except OSError:
+        return False
+    except subprocess.TimeoutExpired:
+        return True
+    return result.returncode >= 0
+
+
+def runnable_tool(*names: str) -> str | None:
+    """First of `names` on PATH that this host can actually execute.
+
+    Presence is not enough, and `shutil.which` only reads the permission bit.
+    Liter8 puts its own tools/ ahead of PATH for both the Python helpers and
+    the device scripts, and the bundled gtar and sshpass are x86_64, so on an
+    Apple Silicon host without Rosetta a plain lookup returns a binary that
+    then dies with "Bad CPU type in executable". A Homebrew copy can also stop
+    loading after its dependencies are upgraded. Mirrors
+    `HostTool.locate(requiringRunnable:)` so a preflight report and the
+    workflow agree on which binary will run.
+
+    Names are tried in order across every directory before the next name, which
+    keeps an operator's own `ldid` ahead of the bundled `ldid_macosx_arm64`.
+    """
+    directories = [
+        directory
+        for directory in os.environ.get("PATH", os.defpath).split(os.pathsep)
+        if directory
+    ]
+    directories = list(dict.fromkeys(directories + list(HOMEBREW_BINARY_DIRECTORIES)))
+    for name in names:
+        for directory in directories:
+            candidate = shutil.which(name, path=directory)
+            if candidate and _can_execute(candidate):
+                return candidate
+    return None
 
 
 def run(

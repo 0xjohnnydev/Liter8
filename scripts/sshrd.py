@@ -5,12 +5,17 @@ from __future__ import annotations
 import os
 import hashlib
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-from liter8_workflow import Context, WorkflowError, run
+from liter8_workflow import (
+    HDIUTIL_QUIET_VARIABLE,
+    Context,
+    WorkflowError,
+    run,
+    runnable_tool,
+)
 
 
 REVIEWED_PAYLOAD_SHA256 = "ddfa230acd2789c7e61ddb0d2ec3df9a6c741f2ddcab58fc1a826d278be1d74d"
@@ -68,7 +73,11 @@ def privileged(arguments: list[object]) -> None:
     # terminal, so normal sudo can show the password or Touch ID prompt here.
     # macOS caches the successful authorization, therefore the remaining
     # privileged image operations normally continue without prompting again.
-    run(["/usr/bin/sudo", *command])
+    #
+    # env carries the hdiutil setting across sudo's env_reset. A `VAR=value`
+    # argument to sudo itself needs a sudoers setenv grant; env needs none.
+    quiet = f"{HDIUTIL_QUIET_VARIABLE}={os.environ.get(HDIUTIL_QUIET_VARIABLE, '1')}"
+    run(["/usr/bin/sudo", "/usr/bin/env", quiet, *command])
 
 
 def build_sshrd(context: Context, ticket: Path, output: Path) -> None:
@@ -80,8 +89,8 @@ def build_sshrd(context: Context, ticket: Path, output: Path) -> None:
     # The public workflow names its reviewed arm64 binary explicitly. Prefer a
     # conventional ldid when supplied by the operator, then accept that bundled
     # filename from Liter8's tools directory.
-    ldid = shutil.which("ldid") or shutil.which("ldid_macosx_arm64")
-    gtar = shutil.which("gtar")
+    ldid = runnable_tool("ldid", "ldid_macosx_arm64")
+    gtar = runnable_tool("gtar")
     for required in (payload, entitlements):
         if not required.is_file():
             raise WorkflowError(f"missing SSHRD resource: {required}")
@@ -91,9 +100,15 @@ def build_sshrd(context: Context, ticket: Path, output: Path) -> None:
             f"SSHRD payload SHA-256 is {payload_digest}, expected {REVIEWED_PAYLOAD_SHA256}"
         )
     if not ldid:
-        raise WorkflowError("ldid is required for SSHRD construction")
+        raise WorkflowError(
+            "a runnable ldid is required for SSHRD construction "
+            "(bundled in tools/, or brew install ldid-procursus)"
+        )
     if not gtar:
-        raise WorkflowError("GNU tar is required for SSHRD construction (brew install gnu-tar)")
+        raise WorkflowError(
+            "a runnable GNU tar is required for SSHRD construction "
+            "(brew install gnu-tar; the bundled tools/gtar is x86_64 and needs Rosetta)"
+        )
 
     source = context.component("RestoreRamDisk")
     with tempfile.TemporaryDirectory(prefix="sshrd-", dir=context.state) as directory:

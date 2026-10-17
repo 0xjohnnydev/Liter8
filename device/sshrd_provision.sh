@@ -69,9 +69,23 @@ SSHPASS="$BASE/askpass-sshpass"
 # Intel Mac. See https://github.com/Xplo8E/Liter8/issues/2.
 LDID="$TOOLS/ldid_macosx_arm64"
 "$LDID" -v 2>&1 | grep -q "Link Identity Editor" || LDID=$(command -v ldid || true)
-# The bundled gtar is x86_64, so it needs Rosetta on Apple Silicon.
-GTAR=$(command -v gtar || true)
-"$GTAR" --version >/dev/null 2>&1 || GTAR="$TOOLS/gtar"
+# The bundled gtar is x86_64, so it needs Rosetta on Apple Silicon. Liter8 also
+# puts tools/ first on PATH, so `command -v gtar` finds that same x86_64 copy
+# and falling back to "$TOOLS/gtar" lands on the binary that just failed. Walk
+# every directory for one that runs before accepting the bundled copy. The two
+# Homebrew prefixes come last because the inherited PATH may carry neither,
+# matching HostTool.homebrewBinaryDirectories.
+GTAR=""
+gtar_ifs=$IFS
+IFS=:
+for gtar_directory in $PATH /opt/homebrew/bin /usr/local/bin; do
+    [ -x "$gtar_directory/gtar" ] || continue
+    "$gtar_directory/gtar" --version >/dev/null 2>&1 || continue
+    GTAR="$gtar_directory/gtar"
+    break
+done
+IFS=$gtar_ifs
+[ -n "$GTAR" ] || GTAR="$TOOLS/gtar"
 # Allow the device's ECDSA key and AES-CTR cipher without dropping SSH defaults.
 SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=25 -o HostKeyAlgorithms=+ecdsa-sha2-nistp521 -o Ciphers=+aes128-ctr -p 2222"
 DEV="root@localhost"
