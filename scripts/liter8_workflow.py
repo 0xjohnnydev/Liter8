@@ -27,6 +27,11 @@ from pathlib import Path
 HDIUTIL_QUIET_VARIABLE = "com_apple_hdiutil_nodeprecatedwarning"
 os.environ.setdefault(HDIUTIL_QUIET_VARIABLE, "1")
 
+# Searched after PATH, which does not always carry either prefix. Keep this in
+# step with HostTool.homebrewBinaryDirectories: a tool Preflight reports as
+# runnable has to be one the helpers can find too.
+HOMEBREW_BINARY_DIRECTORIES = ("/opt/homebrew/bin", "/usr/local/bin")
+
 
 class WorkflowError(RuntimeError):
     """A clear operator-facing workflow failure."""
@@ -329,7 +334,7 @@ def runnable_tool(*names: str) -> str | None:
     `HostTool.locate(requiringRunnable:)` so a preflight report and the
     workflow agree on which binary will run.
 
-    Names are tried in order across the whole PATH before the next name, which
+    Names are tried in order across every directory before the next name, which
     keeps an operator's own `ldid` ahead of the bundled `ldid_macosx_arm64`.
     """
     directories = [
@@ -337,6 +342,7 @@ def runnable_tool(*names: str) -> str | None:
         for directory in os.environ.get("PATH", os.defpath).split(os.pathsep)
         if directory
     ]
+    directories = list(dict.fromkeys(directories + list(HOMEBREW_BINARY_DIRECTORIES)))
     for name in names:
         for directory in directories:
             candidate = shutil.which(name, path=directory)

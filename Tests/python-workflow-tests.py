@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+import liter8_workflow  # noqa: E402
 from liter8_workflow import Context, WorkflowError, run, runnable_tool  # noqa: E402
 import measure_guards  # noqa: E402
 from boot_artifacts import (  # noqa: E402
@@ -880,14 +881,51 @@ class ContextTests(unittest.TestCase):
                     runnable_tool("ldid", "ldid_macosx_arm64"), str(installed)
                 )
 
-    def test_runnable_tool_reports_nothing_when_no_candidate_executes(self):
-        """A host with no usable copy must fail before any image work starts."""
+    def test_runnable_tool_falls_back_to_the_homebrew_prefixes(self):
+        """An inherited PATH may carry neither prefix, and Preflight searches both.
+
+        Without this the two resolvers disagree: `liter8 preflight` reports the
+        Homebrew gtar as runnable while the helper finds only the unrunnable
+        bundled copy and fails before any image work.
+        """
         with tempfile.TemporaryDirectory() as directory:
-            broken = self._tool_directory(
-                Path(directory) / "tools", "gtar", self.UNRUNNABLE
+            root = Path(directory)
+            bundled = self._tool_directory(root / "tools", "gtar", self.UNRUNNABLE)
+            installed = self._tool_directory(
+                root / "homebrew", "gtar", b"#!/bin/sh\nexit 0\n"
             )
 
-            with patch.dict(os.environ, {"PATH": str(broken.parent)}, clear=False):
+            with (
+                patch.dict(os.environ, {"PATH": str(bundled.parent)}, clear=False),
+                patch.object(
+                    liter8_workflow,
+                    "HOMEBREW_BINARY_DIRECTORIES",
+                    (str(installed.parent),),
+                ),
+            ):
+                self.assertEqual(runnable_tool("gtar"), str(installed))
+
+    def test_runnable_tool_reports_nothing_when_no_candidate_executes(self):
+        """A host with no usable copy must fail before any image work starts.
+
+        Both search regions hold an unrunnable copy, so this also proves the
+        Homebrew fallback is rejected on its own merits rather than skipped.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            on_path = self._tool_directory(root / "tools", "gtar", self.UNRUNNABLE)
+            fallback = self._tool_directory(
+                root / "homebrew", "gtar", self.UNRUNNABLE
+            )
+
+            with (
+                patch.dict(os.environ, {"PATH": str(on_path.parent)}, clear=False),
+                patch.object(
+                    liter8_workflow,
+                    "HOMEBREW_BINARY_DIRECTORIES",
+                    (str(fallback.parent),),
+                ),
+            ):
                 self.assertIsNone(runnable_tool("gtar"))
 
     def test_sshrd_privileged_operation_allows_interactive_sudo(self):

@@ -36,6 +36,13 @@ implementations of that check exist, one per language:
 | Python | `liter8_workflow.runnable_tool` |
 | Shell | the `GTAR` and `LDID` probes at the top of `device/sshrd_provision.sh` |
 
+All three search `PATH` and then `/opt/homebrew/bin` and `/usr/local/bin`,
+because Homebrew sits at a different prefix on Apple Silicon and Intel and the
+inherited `PATH` carries neither when Liter8 is launched outside a login
+shell. Those two prefixes have to stay in step across the three: a tool
+`Preflight` reports as runnable that a helper cannot find is the same late
+failure the runnability check exists to prevent.
+
 A new caller that resolves a tool by name uses its layer's resolver. A plain
 `shutil.which`, `command -v` or `-x` test will pick the x86_64 `gtar` here
 ahead of a working Homebrew one.
