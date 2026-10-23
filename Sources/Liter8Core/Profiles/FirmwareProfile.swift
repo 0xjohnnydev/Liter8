@@ -151,7 +151,6 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios27-24A435-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                // Runtime-tested on n104ap 24A446; exact fixture also covers 24A435.
                 KernelTFP0Resolver.variantKey: ResolverVariantProfile(
                     signature: KernelTFP0Resolver.signatureID,
                     payload: KernelTFP0Resolver.payloadID
@@ -175,6 +174,10 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272-24B5084k-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
+                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
+                    signature: KernelTFP0Resolver.signatureID,
+                    payload: KernelTFP0Resolver.payloadID
+                ),
             ]
         ),
         KernelResolverProfile(
@@ -196,6 +199,10 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272b2-24B5089g-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
+                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
+                    signature: KernelTFP0Resolver.signatureID,
+                    payload: KernelTFP0Resolver.payloadID
+                ),
             ]
         ),
         KernelResolverProfile(
@@ -214,6 +221,10 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272b3-24B5099f-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
+                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
+                    signature: KernelTFP0Resolver.signatureID,
+                    payload: KernelTFP0Resolver.payloadID
+                ),
             ]
         ),
         KernelResolverProfile(
@@ -230,6 +241,10 @@ public enum KernelResolverProfileRegistry {
                 "kernel-credential-manager": ResolverVariantProfile(
                     signature: "ios272b4-24B5110a-acm-v1",
                     payload: "acm-return-success-v1"
+                ),
+                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
+                    signature: KernelTFP0Resolver.signatureID,
+                    payload: KernelTFP0Resolver.payloadID
                 ),
             ]
         ),

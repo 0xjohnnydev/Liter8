@@ -38,9 +38,9 @@ public struct KernelTFP0Resolver: Sendable {
         )
     }()
 
-    /// Clean 24A435/24A437/24A446 bytes used only to reconstruct an idempotent
-    /// record after those exact profile-gated builds are already patched.
-    private static let releaseTaskDyldInfoOriginal: [UInt32] = [
+    /// Clean bytes shared by the supported profiles. These reconstruct an
+    /// idempotent record after an exact profile-gated build is already patched.
+    private static let taskDyldInfoOriginal: [UInt32] = [
         0xF941_F288, 0xF900_02C8, 0xF941_F688,
     ]
 
@@ -197,7 +197,7 @@ public struct KernelTFP0Resolver: Sendable {
         let current = try image.bytes(at: site, count: replacement.count)
         let original: Data
         if current == replacement {
-            original = littleEndianData(Self.releaseTaskDyldInfoOriginal)
+            original = littleEndianData(Self.taskDyldInfoOriginal)
         } else {
             try validateCleanTaskDyldInfo(
                 current: current,

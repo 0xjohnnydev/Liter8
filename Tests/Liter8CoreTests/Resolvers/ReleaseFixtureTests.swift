@@ -144,24 +144,44 @@ final class ReleaseFixtureTests: XCTestCase {
         XCTAssertEqual(second.data, first.data)
     }
 
-    func testTFP0StandaloneResolverRediscoversTwoSevenTwoSitesButBootStaysDisabled() throws {
-        let url = binary("kernelcache.release.iphone12b.bin", build: "24B5084k")
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw XCTSkip("local 24B5084k kernelcache fixture is absent")
-        }
+    func testTFP0ResolverCoversTwoSevenTwoBetasAndIsIdempotent() throws {
+        let cases: [(build: String, offsets: [UInt64], slideReplacement: String)] = [
+            ("24B5084k", [0x32EB87C, 0x37FA368, 0x32ED1E4, 0x3335880], "88cbfeb008a540f9df0200f9"),
+            ("24B5089g", [0x32EF810, 0x37FEA40, 0x32F1178, 0x333981C], "68cbfeb008a540f9df0200f9"),
+            ("24B5099f", [0x3207830, 0x3716BA8, 0x3209198, 0x3251854], "88d1feb0089140f9df0200f9"),
+            ("24B5110a", [0x320B830, 0x371AE48, 0x320D198, 0x3255854], "68d1feb0089140f9df0200f9"),
+        ]
 
-        let image = try BinaryImage(contentsOf: url)
-        let records = try KernelTFP0Resolver().resolve(in: image)
-        XCTAssertEqual(records.map(\.offset), [0x32EB87C, 0x37FA368, 0x32ED1E4, 0x3335880])
-        XCTAssertEqual(
-            records.prefix(3).compactMap(\.replacementWord),
-            [0xEB1F03FF, 0xD503201F, 0x1400000A]
-        )
-        XCTAssertEqual(records.last?.replacementBytes.hexadecimalString, "88cbfeb008a540f9df0200f9")
-        XCTAssertThrowsError(try KernelTFP0Resolver.requiredRecords(in: image)) {
-            guard case PatchfinderError.unsupportedFirmwareProfile = $0 else {
-                return XCTFail("unexpected error \($0)")
+        for testCase in cases {
+            let url = binary("kernelcache.release.iphone12b.bin", build: testCase.build)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw XCTSkip("local \(testCase.build) kernelcache fixture is absent")
             }
+
+            let image = try BinaryImage(contentsOf: url)
+            let records = try KernelTFP0Resolver.requiredRecords(in: image)
+            XCTAssertEqual(records.map(\.offset), testCase.offsets, testCase.build)
+            XCTAssertEqual(
+                records.prefix(3).compactMap(\.replacementWord),
+                [0xEB1F03FF, 0xD503201F, 0x1400000A],
+                testCase.build
+            )
+            XCTAssertEqual(
+                records.last?.replacementBytes.hexadecimalString,
+                testCase.slideReplacement,
+                testCase.build
+            )
+
+            let first = try GuardedPatchApplier.apply(records, to: image)
+            let patched = BinaryImage(data: first.data)
+            let secondRecords = try KernelTFP0Resolver.requiredRecords(in: patched)
+            XCTAssertEqual(secondRecords, records, testCase.build)
+            let second = try GuardedPatchApplier.apply(secondRecords, to: patched)
+            XCTAssertTrue(
+                second.dispositions.values.allSatisfy { $0 == .alreadyApplied },
+                testCase.build
+            )
+            XCTAssertEqual(second.data, first.data, testCase.build)
         }
     }
 

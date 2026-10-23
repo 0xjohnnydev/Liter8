@@ -288,7 +288,8 @@ public enum DeviceWorkflowRegistry {
             setupControllerMethodCount: 65,
             bootPlan: DeviceBootPlan(
                 normalIBSSAdditionalPlans: [.skipDisplayInitialization],
-                restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization],
+                supportsTFP0KernelTaskPort: true
             )
         ),
         // iOS 27.2 beta 2. Every plan resolves and all four oracles below were
@@ -316,7 +317,8 @@ public enum DeviceWorkflowRegistry {
             setupControllerMethodCount: 65,
             bootPlan: DeviceBootPlan(
                 normalIBSSAdditionalPlans: [.skipDisplayInitialization],
-                restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization],
+                supportsTFP0KernelTaskPort: true
             )
         ),
         // iOS 27.2 beta 3, device-validated on an iPhone 11: erase restore and
@@ -340,7 +342,8 @@ public enum DeviceWorkflowRegistry {
             setupControllerMethodCount: 65,
             bootPlan: DeviceBootPlan(
                 normalIBSSAdditionalPlans: [.skipDisplayInitialization],
-                restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization],
+                supportsTFP0KernelTaskPort: true
             )
         ),
         // iOS 27.2 beta 4, device-validated on an iPhone 11: erase restore, SSHRD
@@ -366,7 +369,8 @@ public enum DeviceWorkflowRegistry {
             setupControllerMethodCount: 64,
             bootPlan: DeviceBootPlan(
                 normalIBSSAdditionalPlans: [.skipDisplayInitialization],
-                restoreIBSSAdditionalPlans: [.skipDisplayInitialization]
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization],
+                supportsTFP0KernelTaskPort: true
             )
         ),
         // iOS 27.0.1, device-validated on an iPhone 11: erase restore, SSHRD
