@@ -143,6 +143,10 @@ Take the SIM out before going through Setup on a fresh restore. Cellular data do
 
 `fw get-boot` builds TXM with its code-signing policy flags turned on (any signature, unrestricted local signing, relaxed profile trust, CS enforcement disabled, unrestricted task_for_pid) plus the patches C function hooks need. CoreTrust stays enforced. The boot manifest records it as `txmPlan: boot-permissive`.
 
+On iPhone 11 (`iPhone12,1` / `n104ap`) running 24A435 or 24A446, use
+`fw get-boot --tfp0` to add the three tfp0 kernel patches. It is off by default.
+See the [24A446 device run](docs/runs/IOS_27_24A446_TFP0.md).
+
 ### 7. Finish the bootstrap
 
 Wait until you can SSH into the booted OS, then:

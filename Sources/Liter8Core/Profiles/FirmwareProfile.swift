@@ -151,6 +151,11 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios27-24A435-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
+                // Runtime-tested on n104ap 24A446; exact fixture also covers 24A435.
+                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
+                    signature: KernelTFP0Resolver.signatureID,
+                    payload: KernelTFP0Resolver.payloadID
+                ),
             ]
         ),
         KernelResolverProfile(

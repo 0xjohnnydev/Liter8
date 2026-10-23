@@ -121,6 +121,46 @@ final class ReleaseFixtureTests: XCTestCase {
         XCTAssertEqual(checked, 219, "every 27.2 record must be covered")
     }
 
+    func testTFP0FixturesAndIdempotence() throws {
+        let offsets: [UInt64] = [0x31B6640, 0x36BF37C, 0x31B7FA8]
+        for build in ["24A435", "24A446"] {
+            let url = binary("kernelcache.release.iphone12b.bin", build: build)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw XCTSkip("local \(build) kernelcache fixture is absent")
+            }
+            let fixture = try manifest("kernel-tfp0-n104-\(build).json", build: build)
+            XCTAssertEqual(try fixture.verify(binaryAt: url).map(\.offset), offsets)
+        }
+
+        let url = binary("kernelcache.release.iphone12b.bin", build: "24A446")
+        let image = try BinaryImage(contentsOf: url)
+        let required = try KernelTFP0Resolver.requiredRecords(in: image)
+        let first = try GuardedPatchApplier.apply(required, to: image)
+        let patched = BinaryImage(data: first.data)
+        let secondRecords = try KernelTFP0Resolver.requiredRecords(in: patched)
+        XCTAssertEqual(secondRecords, required)
+        let second = try GuardedPatchApplier.apply(secondRecords, to: patched)
+        XCTAssertTrue(second.dispositions.values.allSatisfy { $0 == .alreadyApplied })
+        XCTAssertEqual(second.data, first.data)
+    }
+
+    func testTFP0StandaloneResolverRediscoversTwoSevenTwoSitesButBootStaysDisabled() throws {
+        let url = binary("kernelcache.release.iphone12b.bin", build: "24B5084k")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("local 24B5084k kernelcache fixture is absent")
+        }
+
+        let image = try BinaryImage(contentsOf: url)
+        let records = try KernelTFP0Resolver().resolve(in: image)
+        XCTAssertEqual(records.map(\.offset), [0x32EB87C, 0x37FA368, 0x32ED1E4])
+        XCTAssertEqual(records.map(\.replacementWord), [0xEB1F03FF, 0xD503201F, 0x1400000A])
+        XCTAssertThrowsError(try KernelTFP0Resolver.requiredRecords(in: image)) {
+            guard case PatchfinderError.unsupportedFirmwareProfile = $0 else {
+                return XCTFail("unexpected error \($0)")
+            }
+        }
+    }
+
     /// 27.2 must describe the same operations as the release builds.
     ///
     /// This is the comparison that matters most of the three, because 27.2
@@ -199,7 +239,7 @@ final class ReleaseFixtureTests: XCTestCase {
         let fileManager = FileManager.default
 
         let releaseFiles = try fileManager.contentsOfDirectory(atPath: releaseRoot.path)
-            .filter { $0.hasSuffix(".json") }
+            .filter { $0.hasSuffix(".json") && !$0.hasPrefix("kernel-tfp0-") }
         let betaFiles = try fileManager.contentsOfDirectory(atPath: betaRoot.path)
             .filter { $0.hasSuffix(".json") }
         XCTAssertEqual(releaseFiles.count, betaFiles.count)
