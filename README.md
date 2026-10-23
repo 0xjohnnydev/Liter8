@@ -2,7 +2,7 @@
 
 Patch and boot custom iOS 27 on an iPhone 11, from a Mac. Built on the usbliter8 exploit.
 
-![iOS](https://img.shields.io/badge/iOS-27.0%20to%2027.2%20beta%202-2ea043?style=flat-square)
+![iOS](https://img.shields.io/badge/iOS-27.0%20to%2027.2%20beta%204-2ea043?style=flat-square)
 
 <img src="./docs/iphone11-sileo.jpg" alt="iPhone 11 running patched iOS 27 with Sileo" width="760">
 

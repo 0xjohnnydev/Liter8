@@ -84,6 +84,11 @@ public struct KernelResolverProfile: Equatable, Sendable {
     }
 }
 
+private let tfp0Variant = ResolverVariantProfile(
+    signature: KernelTFP0Resolver.signatureID,
+    payload: KernelTFP0Resolver.payloadID
+)
+
 /// The reviewed build-to-variant map.
 ///
 /// This table contains no offsets. Offsets remain outputs of semantic
@@ -151,10 +156,7 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios27-24A435-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
-                    signature: KernelTFP0Resolver.signatureID,
-                    payload: KernelTFP0Resolver.payloadID
-                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
             ]
         ),
         KernelResolverProfile(
@@ -174,10 +176,7 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272-24B5084k-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
-                    signature: KernelTFP0Resolver.signatureID,
-                    payload: KernelTFP0Resolver.payloadID
-                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
             ]
         ),
         KernelResolverProfile(
@@ -199,10 +198,7 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272b2-24B5089g-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
-                    signature: KernelTFP0Resolver.signatureID,
-                    payload: KernelTFP0Resolver.payloadID
-                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
             ]
         ),
         KernelResolverProfile(
@@ -221,10 +217,7 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272b3-24B5099f-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
-                    signature: KernelTFP0Resolver.signatureID,
-                    payload: KernelTFP0Resolver.payloadID
-                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
             ]
         ),
         KernelResolverProfile(
@@ -242,10 +235,7 @@ public enum KernelResolverProfileRegistry {
                     signature: "ios272b4-24B5110a-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
-                KernelTFP0Resolver.variantKey: ResolverVariantProfile(
-                    signature: KernelTFP0Resolver.signatureID,
-                    payload: KernelTFP0Resolver.payloadID
-                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
             ]
         ),
     ]

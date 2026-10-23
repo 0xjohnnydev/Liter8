@@ -54,7 +54,6 @@ let resolverGroups: [String: [String: String]] = [
         "vm-map-protect": KernelVMMapProtectResolver.name,
         "valeria": KernelValeriaResolver.name,
         "exception-port": KernelExceptionPortResolver.name,
-        "tfp0": KernelTFP0Resolver.name,
         "boot": KernelBootResolver.name,
         "boot-jit": KernelBootJITResolver.name,
         "boot-tfp0": KernelBootTFP0Resolver.name,
@@ -260,9 +259,6 @@ func resolveRecords(
     case KernelExceptionPortResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelExceptionPortResolver().resolve(in: image)
-    case KernelTFP0Resolver.name:
-        try options.requireNoTuning(resolver: name)
-        return try KernelTFP0Resolver().resolve(in: image)
     case KernelBootResolver.name:
         try options.requireNoTuning(resolver: name)
         return try KernelBootResolver().resolve(in: image)
