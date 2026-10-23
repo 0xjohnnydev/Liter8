@@ -122,7 +122,7 @@ final class ReleaseFixtureTests: XCTestCase {
     }
 
     func testTFP0FixturesAndIdempotence() throws {
-        let offsets: [UInt64] = [0x31B6640, 0x36BF37C, 0x31B7FA8]
+        let offsets: [UInt64] = [0x31B6640, 0x36BF37C, 0x31B7FA8, 0x32003F8]
         for build in ["24A435", "24A446"] {
             let url = binary("kernelcache.release.iphone12b.bin", build: build)
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -152,12 +152,64 @@ final class ReleaseFixtureTests: XCTestCase {
 
         let image = try BinaryImage(contentsOf: url)
         let records = try KernelTFP0Resolver().resolve(in: image)
-        XCTAssertEqual(records.map(\.offset), [0x32EB87C, 0x37FA368, 0x32ED1E4])
-        XCTAssertEqual(records.map(\.replacementWord), [0xEB1F03FF, 0xD503201F, 0x1400000A])
+        XCTAssertEqual(records.map(\.offset), [0x32EB87C, 0x37FA368, 0x32ED1E4, 0x3335880])
+        XCTAssertEqual(
+            records.prefix(3).compactMap(\.replacementWord),
+            [0xEB1F03FF, 0xD503201F, 0x1400000A]
+        )
+        XCTAssertEqual(records.last?.replacementBytes.hexadecimalString, "88cbfeb008a540f9df0200f9")
         XCTAssertThrowsError(try KernelTFP0Resolver.requiredRecords(in: image)) {
             guard case PatchfinderError.unsupportedFirmwareProfile = $0 else {
                 return XCTFail("unexpected error \($0)")
             }
+        }
+    }
+
+    func testTFP0SlideResolverFailsClosedOnDamagedOrAmbiguousEvidence() throws {
+        let url = binary("kernelcache.release.iphone12b.bin", build: "24A446")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("local 24A446 kernelcache fixture is absent")
+        }
+
+        let clean = try BinaryImage(contentsOf: url)
+        let format = "KernelCache slide: 0x%016lx\n"
+        let anchors = clean.findAll(utf8: format, nulTerminated: true)
+        XCTAssertEqual(anchors.count, 1)
+        guard let anchor = anchors.first else { return }
+
+        var missingAnchor = clean.data
+        missingAnchor[Int(anchor)] ^= 0x20
+        XCTAssertThrowsError(
+            try KernelTFP0Resolver().resolve(in: BinaryImage(data: missingAnchor))
+        ) { error in
+            guard case PatchfinderError.missingAnchor = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+        }
+
+        var duplicateAnchor = clean.data
+        duplicateAnchor.append(contentsOf: format.utf8)
+        duplicateAnchor.append(0)
+        XCTAssertThrowsError(
+            try KernelTFP0Resolver().resolve(in: BinaryImage(data: duplicateAnchor))
+        ) { error in
+            guard case PatchfinderError.ambiguousAnchor = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+        }
+
+        var damagedPreimage = clean.data
+        var nop = ARM64.nop.littleEndian
+        withUnsafeBytes(of: &nop) { bytes in
+            damagedPreimage.replaceSubrange(0x32003F8..<(0x32003F8 + 4), with: bytes)
+        }
+        XCTAssertThrowsError(
+            try KernelTFP0Resolver().resolve(in: BinaryImage(data: damagedPreimage))
+        ) { error in
+            guard case let PatchfinderError.invalidPatch(id, _) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertEqual(id, "kernel.tfp0.dyld-info-slide")
         }
     }
 

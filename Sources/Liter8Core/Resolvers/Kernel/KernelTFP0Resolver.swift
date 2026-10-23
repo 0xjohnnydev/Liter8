@@ -1,11 +1,48 @@
 import Foundation
 
-/// The three PongoOS-style patches needed by libkrw's tfp0 adapter.
+/// The four kernel patches needed by libkrw's tfp0 adapter.
 public struct KernelTFP0Resolver: Sendable {
     public static let name = "kernel-tfp0"
     static let variantKey = name
-    static let signatureID = "ios27-24A435-tfp0-v1"
-    static let payloadID = "task-for-pid-zero-v1"
+    static let signatureID = "ios27-24A435-tfp0-v2"
+    static let payloadID = "task-for-pid-zero-slide-v2"
+    private static let kernelSlideFormat = "KernelCache slide: 0x%016lx\n"
+
+    /// `task_info(TASK_DYLD_INFO)` normally returns the userspace dyld-info
+    /// pointer and size. libkrw0-tfp0 deliberately uses the same fields as a
+    /// kernel-slide transport: address 0 means the backend contract is active,
+    /// and size carries `vm_kernel_slide`.
+    ///
+    /// The three instructions that become the transport are excluded from the
+    /// signature so the resolver is idempotent. The surrounding count checks,
+    /// branch conditions, second-field store and register flow stay pinned.
+    private static let taskDyldInfoPattern: MaskedInstructionPattern = {
+        let words: [UInt32] = [
+            0xB940_02A8, 0x7100_111F, 0x5400_1A83,
+            0xF941_F288, 0xF900_02C8, 0xF941_F688,
+            0xF900_06C8, 0xB940_02A8, 0x7100_151F, 0x5400_24C3,
+        ]
+        let reference = MaskedInstructionPattern(
+            name: "TASK_DYLD_INFO result construction",
+            referenceWords: words,
+            allowDataLayoutDrift: true
+        )
+        var masks = reference.masks
+        masks[3] = 0
+        masks[4] = 0
+        masks[5] = 0
+        return MaskedInstructionPattern(
+            name: reference.name,
+            values: zip(words, masks).map { $0 & $1 },
+            masks: masks
+        )
+    }()
+
+    /// Clean 24A435/24A437/24A446 bytes used only to reconstruct an idempotent
+    /// record after those exact profile-gated builds are already patched.
+    private static let releaseTaskDyldInfoOriginal: [UInt32] = [
+        0xF941_F288, 0xF900_02C8, 0xF941_F688,
+    ]
 
     private struct Site: Sendable {
         let id: String
@@ -91,7 +128,7 @@ public struct KernelTFP0Resolver: Sendable {
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
         let layout = try MachOLayout(image: image)
-        return try Self.sites.map { site in
+        let tfp0 = try Self.sites.map { site in
             let start = try site.pattern.uniqueMatch(in: image, layout: layout)
             let offset = start + UInt64(site.wordIndex * 4)
             let current = try image.readUInt32(at: offset)
@@ -111,6 +148,194 @@ public struct KernelTFP0Resolver: Sendable {
                 evidence: ["unique \(site.pattern.name) instruction sequence"]
             )
         }
+        return tfp0 + [try taskDyldInfoSlideRecord(in: image, layout: layout)]
+    }
+
+    private func taskDyldInfoSlideRecord(
+        in image: BinaryImage,
+        layout: MachOLayout
+    ) throws -> PatchRecord {
+        let slide = try kernelSlideGlobal(in: image, layout: layout)
+        let sequence = try Self.taskDyldInfoPattern.uniqueMatch(in: image, layout: layout)
+        let site = sequence + 12
+
+        let finalStore = try image.readUInt32(at: site + 12)
+        guard isUnsigned64Store(finalStore), unsignedByteOffset(finalStore) == 8 else {
+            throw PatchfinderError.invalidPatch(
+                id: "kernel.tfp0.dyld-info-slide",
+                reason: "TASK_DYLD_INFO second result field is not a 64-bit +8 store"
+            )
+        }
+        let valueRegister = finalStore & 0x1F
+        let outputRegister = (finalStore >> 5) & 0x1F
+        guard outputRegister != 31,
+              let siteAddress = layout.virtualAddress(forFileOffset: site),
+              let page = ARM64.encodeADRP(
+                register: valueRegister,
+                instructionOffset: siteAddress,
+                target: slide.virtualAddress
+              ),
+              let load = ARM64.encodeLoadUnsigned64(
+                destination: valueRegister,
+                base: valueRegister,
+                byteOffset: UInt32(slide.virtualAddress & 0xFFF)
+              ),
+              let clearAddress = ARM64.encodeStoreUnsigned64(
+                source: 31,
+                base: outputRegister,
+                byteOffset: 0
+              )
+        else {
+            throw PatchfinderError.invalidPatch(
+                id: "kernel.tfp0.dyld-info-slide",
+                reason: "cannot encode the TASK_DYLD_INFO slide transport"
+            )
+        }
+
+        let replacementWords = [page, load, clearAddress]
+        let replacement = littleEndianData(replacementWords)
+        let current = try image.bytes(at: site, count: replacement.count)
+        let original: Data
+        if current == replacement {
+            original = littleEndianData(Self.releaseTaskDyldInfoOriginal)
+        } else {
+            try validateCleanTaskDyldInfo(
+                current: current,
+                valueRegister: valueRegister,
+                outputRegister: outputRegister
+            )
+            original = current
+        }
+
+        return PatchRecord(
+            id: "kernel.tfp0.dyld-info-slide",
+            component: "kernelcache",
+            offset: site,
+            originalBytes: original,
+            replacementBytes: replacement,
+            summary: "Return vm_kernel_slide through TASK_DYLD_INFO for libkrw0-tfp0",
+            evidence: [
+                "unique TASK_DYLD_INFO count checks and two-field result construction",
+                "unique \(Self.kernelSlideFormat.trimmingCharacters(in: .newlines)) format string",
+                "the value spilled immediately before that format string resolves to vm_kernel_slide at \(slide.fileOffset.hex)",
+                "the replacement clears all_image_info_addr and returns the live slide in all_image_info_size",
+            ]
+        )
+    }
+
+    private func kernelSlideGlobal(
+        in image: BinaryImage,
+        layout: MachOLayout
+    ) throws -> (fileOffset: UInt64, virtualAddress: UInt64) {
+        let strings = image.findAll(utf8: Self.kernelSlideFormat, nulTerminated: true)
+        guard strings.count == 1, let string = strings.first else {
+            if strings.isEmpty { throw PatchfinderError.missingAnchor(Self.kernelSlideFormat) }
+            throw PatchfinderError.ambiguousAnchor(Self.kernelSlideFormat, count: strings.count)
+        }
+        let references = try layout.adrpAddReferences(toFileOffset: string)
+        guard references.count == 1, let reference = references.first else {
+            if references.isEmpty {
+                throw PatchfinderError.missingAnchor("kernel slide format reference")
+            }
+            throw PatchfinderError.ambiguousAnchor(
+                "kernel slide format reference",
+                count: references.count
+            )
+        }
+        guard reference.adrpOffset >= 12,
+              try image.readUInt32(at: reference.adrpOffset) & 0x1F == 0,
+              try image.readUInt32(at: reference.addOffset) & 0x1F == 0,
+              ARM64.branchLinkTarget(
+                instruction: try image.readUInt32(at: reference.addOffset + 4),
+                at: reference.addOffset + 4
+              ) != nil
+        else {
+            throw PatchfinderError.noCandidate("kernel slide formatter X0 argument")
+        }
+
+        let pageOffset = reference.adrpOffset - 12
+        let page = try image.readUInt32(at: pageOffset)
+        let load = try image.readUInt32(at: pageOffset + 4)
+        let spill = try image.readUInt32(at: pageOffset + 8)
+        guard page & 0x9F00_0000 == 0x9000_0000,
+              isUnsigned64Load(load),
+              (load >> 5) & 0x1F == page & 0x1F,
+              isUnsigned64Store(spill),
+              spill & 0x1F == load & 0x1F,
+              (spill >> 5) & 0x1F == 31,
+              let pageAddress = layout.virtualAddress(forFileOffset: pageOffset)
+        else {
+            throw PatchfinderError.noCandidate("vm_kernel_slide formatter argument load")
+        }
+
+        let virtualAddress = ARM64.adrpTarget(instruction: page, at: pageAddress)
+            + UInt64(unsignedByteOffset(load))
+        guard let fileOffset = layout.fileOffset(forVirtualAddress: virtualAddress),
+              layout.segments.contains(where: {
+                $0.fileRange.contains(fileOffset) && !$0.isExecutable
+              })
+        else {
+            throw PatchfinderError.invalidPatch(
+                id: "kernel.tfp0.dyld-info-slide",
+                reason: "vm_kernel_slide does not resolve to mapped data"
+            )
+        }
+        return (fileOffset, virtualAddress)
+    }
+
+    private func validateCleanTaskDyldInfo(
+        current: Data,
+        valueRegister: UInt32,
+        outputRegister: UInt32
+    ) throws {
+        let words = current.withUnsafeBytes { bytes in
+            (0..<3).map { index in
+                UInt32(littleEndian: bytes.loadUnaligned(
+                    fromByteOffset: index * MemoryLayout<UInt32>.size,
+                    as: UInt32.self
+                ))
+            }
+        }
+        let firstLoad = words[0]
+        let addressStore = words[1]
+        let secondLoad = words[2]
+        guard isUnsigned64Load(firstLoad),
+              firstLoad & 0x1F == valueRegister,
+              isUnsigned64Store(addressStore),
+              addressStore & 0x1F == valueRegister,
+              (addressStore >> 5) & 0x1F == outputRegister,
+              unsignedByteOffset(addressStore) == 0,
+              isUnsigned64Load(secondLoad),
+              secondLoad & 0x1F == valueRegister,
+              (secondLoad >> 5) & 0x1F == (firstLoad >> 5) & 0x1F,
+              unsignedByteOffset(secondLoad) == unsignedByteOffset(firstLoad) + 8
+        else {
+            throw PatchfinderError.invalidPatch(
+                id: "kernel.tfp0.dyld-info-slide",
+                reason: "unexpected TASK_DYLD_INFO result construction"
+            )
+        }
+    }
+
+    private func isUnsigned64Load(_ instruction: UInt32) -> Bool {
+        instruction & 0xFFC0_0000 == 0xF940_0000
+    }
+
+    private func isUnsigned64Store(_ instruction: UInt32) -> Bool {
+        instruction & 0xFFC0_0000 == 0xF900_0000
+    }
+
+    private func unsignedByteOffset(_ instruction: UInt32) -> UInt32 {
+        ((instruction >> 10) & 0xFFF) * 8
+    }
+
+    private func littleEndianData(_ words: [UInt32]) -> Data {
+        var data = Data()
+        for word in words {
+            var littleEndian = word.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        return data
     }
 
     private static func patchPattern(

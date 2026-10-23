@@ -46,6 +46,35 @@ enum ARM64 {
         return 0x9100_0000 | (immediate << 10) | (source << 5) | destination
     }
 
+    /// Encode `LDR Xt,[Xn,#byteOffset]` with the ARM64 unsigned scaled offset.
+    static func encodeLoadUnsigned64(
+        destination: UInt32,
+        base: UInt32,
+        byteOffset: UInt32
+    ) -> UInt32? {
+        guard destination < 32,
+              base < 32,
+              byteOffset.isMultiple(of: 8),
+              byteOffset / 8 < 0x1000
+        else { return nil }
+        return 0xF940_0000 | ((byteOffset / 8) << 10) | (base << 5) | destination
+    }
+
+    /// Encode `STR Xt,[Xn,#byteOffset]` with the ARM64 unsigned scaled offset.
+    /// Register 31 is valid here and encodes XZR as the stored value.
+    static func encodeStoreUnsigned64(
+        source: UInt32,
+        base: UInt32,
+        byteOffset: UInt32
+    ) -> UInt32? {
+        guard source < 32,
+              base < 32,
+              byteOffset.isMultiple(of: 8),
+              byteOffset / 8 < 0x1000
+        else { return nil }
+        return 0xF900_0000 | ((byteOffset / 8) << 10) | (base << 5) | source
+    }
+
     /// Retarget a CBZ/CBNZ while preserving its width, sense and tested
     /// register. Useful when the existing branch has exactly the right
     /// predicate but the desired outcome is a different local basic block.

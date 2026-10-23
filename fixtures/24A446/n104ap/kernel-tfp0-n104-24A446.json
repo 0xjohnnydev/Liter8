@@ -1,5 +1,5 @@
 {
-  "expectedOutputSHA256" : "968d5a59aa1c07d1bcda0ab0046bd82880febff730f0106121b889ccc250fbf8",
+  "expectedOutputSHA256" : "8d9db562d3e99d572d5aa883a3f9ac5552e02c0c922d7e7f107017b721659778",
   "expectedPatches" : [
     {
       "id" : "kernel.tfp0.task-conversion",
@@ -18,6 +18,12 @@
       "offset" : 52133800,
       "originalBytes" : "41010054",
       "replacementBytes" : "0a000014"
+    },
+    {
+      "id" : "kernel.tfp0.dyld-info-slide",
+      "offset" : 52429816,
+      "originalBytes" : "88f241f9c80200f988f641f9",
+      "replacementBytes" : "68d3feb008b547f9df0200f9"
     }
   ],
   "expectedSize" : 67534848,

@@ -2,6 +2,32 @@ import Foundation
 import XCTest
 @testable import Liter8Core
 
+final class ARM64UnsignedOffsetEncodingTests: XCTestCase {
+    func testEncodesKernelSlideTransportInstructions() {
+        XCTAssertEqual(
+            ARM64.encodeADRP(
+                register: 8,
+                instructionOffset: 0x320_03F8,
+                target: 0x0C6D_F68
+            ),
+            0xB0FE_D368
+        )
+        XCTAssertEqual(
+            ARM64.encodeLoadUnsigned64(destination: 8, base: 8, byteOffset: 0xF68),
+            0xF947_B508
+        )
+        XCTAssertEqual(
+            ARM64.encodeStoreUnsigned64(source: 31, base: 22, byteOffset: 0),
+            0xF900_02DF
+        )
+    }
+
+    func testRejectsUnalignedOrOutOfRangeUnsignedOffsets() {
+        XCTAssertNil(ARM64.encodeLoadUnsigned64(destination: 8, base: 8, byteOffset: 7))
+        XCTAssertNil(ARM64.encodeStoreUnsigned64(source: 31, base: 22, byteOffset: 0x8000))
+    }
+}
+
 /// Unit coverage for the primitives iOS 27 RC `24A435` broke.
 ///
 /// These build synthetic images instead of reading firmware, so they run
