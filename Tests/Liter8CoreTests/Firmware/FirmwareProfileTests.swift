@@ -109,7 +109,11 @@ final class FirmwareProfileTests: XCTestCase {
     }
 
     func testTFP0SupportCoversIPhone11Through272Beta4() throws {
-        for build in ["24A435", "24A437", "24A446", "24B5084k", "24B5089g", "24B5099f", "24B5110a"] {
+        let kernelBuilds = [
+            "24A435", "24A437", "24A446",
+            "24B5084k", "24B5089g", "24B5099f", "24B5110a",
+        ]
+        for build in kernelBuilds {
             let profile = try XCTUnwrap(
                 KernelResolverProfileRegistry.profiles.first { $0.covers(build: build) }
             )

@@ -7,6 +7,7 @@ public struct KernelTFP0Resolver: Sendable {
     static let signatureID = "ios27-24A435-tfp0-v2"
     static let payloadID = "task-for-pid-zero-slide-v2"
     private static let kernelSlideFormat = "KernelCache slide: 0x%016lx\n"
+    private static let slideRecordID = "kernel.tfp0.dyld-info-slide"
 
     /// `task_info(TASK_DYLD_INFO)` normally returns the userspace dyld-info
     /// pointer and size. libkrw0-tfp0 deliberately uses the same fields as a
@@ -48,62 +49,84 @@ public struct KernelTFP0Resolver: Sendable {
         let id: String
         let summary: String
         let pattern: MaskedInstructionPattern
-        let wordIndex: Int
+        let patchIndex: Int
         let original: UInt32
         let replacement: UInt32
+
+        init(
+            id: String,
+            summary: String,
+            patternName: String,
+            words: [UInt32],
+            patchIndex: Int,
+            replacement: UInt32,
+            allowDataLayoutDrift: Bool = false
+        ) {
+            precondition(words.indices.contains(patchIndex))
+            let reference = MaskedInstructionPattern(
+                name: patternName,
+                referenceWords: words,
+                allowDataLayoutDrift: allowDataLayoutDrift
+            )
+            var masks = reference.masks
+            masks[patchIndex] = 0
+
+            self.id = id
+            self.summary = summary
+            self.pattern = MaskedInstructionPattern(
+                name: patternName,
+                values: zip(words, masks).map { $0 & $1 },
+                masks: masks
+            )
+            self.patchIndex = patchIndex
+            self.original = words[patchIndex]
+            self.replacement = replacement
+        }
     }
 
     private static let sites = [
         Site(
             id: "kernel.tfp0.task-conversion",
             summary: "Make the task-conversion success edge unconditional",
-            pattern: patchPattern(
-                name: "tfp0 task conversion",
-                words: [
-                    0xAA00_03E8, 0xAA13_03E0, 0x3400_0268, 0x5280_0008,
-                    0xEB01_001F, 0x5400_0240, 0xB0FE_D5A9, 0xF945_3129,
-                    0xEB09_001F, 0x5400_01C0, 0xEB09_003F, 0x5400_0160,
-                ],
-                patchIndex: 8,
-                allowDataLayoutDrift: true
-            ),
-            wordIndex: 8,
-            original: 0xEB09_001F,       // CMP X0,X9
-            replacement: 0xEB1F_03FF     // CMP XZR,XZR
+            patternName: "tfp0 task conversion",
+            words: [
+                0xAA00_03E8, 0xAA13_03E0, 0x3400_0268, 0x5280_0008,
+                0xEB01_001F, 0x5400_0240, 0xB0FE_D5A9, 0xF945_3129,
+                0xEB09_001F, // CMP X0,X9
+                0x5400_01C0, 0xEB09_003F, 0x5400_0160,
+            ],
+            patchIndex: 8,
+            replacement: 0xEB1F_03FF, // CMP XZR,XZR
+            allowDataLayoutDrift: true
         ),
         Site(
             id: "kernel.tfp0.pid-zero",
             summary: "Let task_for_pid continue when PID is zero",
-            pattern: patchPattern(
-                name: "tfp0 PID-zero gate",
-                words: [
-                    0x9101_C3FD, 0xAA00_03E8, 0xB940_0000, 0xB940_0917,
-                    0xF940_0913, 0xB900_1FFF, 0xA900_FFFF, 0xF900_03FF,
-                    0x3400_07F7, 0x5280_0001, 0x5280_0002, 0x5280_0003,
-                    0xD280_0004, 0x9400_0000, 0xB400_0720, 0xAA00_03F4,
-                ],
-                patchIndex: 8
-            ),
-            wordIndex: 8,
-            original: 0x3400_07F7,       // CBZ W23,reject
+            patternName: "tfp0 PID-zero gate",
+            words: [
+                0x9101_C3FD, 0xAA00_03E8, 0xB940_0000, 0xB940_0917,
+                0xF940_0913, 0xB900_1FFF, 0xA900_FFFF, 0xF900_03FF,
+                0x3400_07F7, // CBZ W23,reject
+                0x5280_0001, 0x5280_0002, 0x5280_0003,
+                0xD280_0004, 0x9400_0000, 0xB400_0720, 0xAA00_03F4,
+            ],
+            patchIndex: 8,
             replacement: ARM64.nop
         ),
         Site(
             id: "kernel.tfp0.kernel-map",
             summary: "Skip the userspace kernel_pmap panic",
-            pattern: patchPattern(
-                name: "tfp0 kernel-map panic",
-                words: [
-                    0xF2E4_A191, 0xDAC1_1A30, 0xAA10_03F1, 0xDAC1_47F1,
-                    0xEB11_021F, 0x5400_0040, 0xD438_8E40, 0xB000_59A8,
-                    0x9122_4108, 0xEB08_021F, 0x5400_0141, 0x5281_6C08,
-                ],
-                patchIndex: 10,
-                allowDataLayoutDrift: true
-            ),
-            wordIndex: 10,
-            original: 0x5400_0141,       // B.NE allowed
-            replacement: 0x1400_000A     // B allowed
+            patternName: "tfp0 kernel-map panic",
+            words: [
+                0xF2E4_A191, 0xDAC1_1A30, 0xAA10_03F1, 0xDAC1_47F1,
+                0xEB11_021F, 0x5400_0040, 0xD438_8E40, 0xB000_59A8,
+                0x9122_4108, 0xEB08_021F,
+                0x5400_0141, // B.NE allowed
+                0x5281_6C08,
+            ],
+            patchIndex: 10,
+            replacement: 0x1400_000A, // B allowed
+            allowDataLayoutDrift: true
         ),
     ]
 
@@ -128,9 +151,9 @@ public struct KernelTFP0Resolver: Sendable {
 
     public func resolve(in image: BinaryImage) throws -> [PatchRecord] {
         let layout = try MachOLayout(image: image)
-        let tfp0 = try Self.sites.map { site in
+        let records = try Self.sites.map { site in
             let start = try site.pattern.uniqueMatch(in: image, layout: layout)
-            let offset = start + UInt64(site.wordIndex * 4)
+            let offset = start + UInt64(site.patchIndex * 4)
             let current = try image.readUInt32(at: offset)
             guard current == site.original || current == site.replacement else {
                 throw PatchfinderError.invalidPatch(
@@ -148,7 +171,7 @@ public struct KernelTFP0Resolver: Sendable {
                 evidence: ["unique \(site.pattern.name) instruction sequence"]
             )
         }
-        return tfp0 + [try taskDyldInfoSlideRecord(in: image, layout: layout)]
+        return records + [try taskDyldInfoSlideRecord(in: image, layout: layout)]
     }
 
     private func taskDyldInfoSlideRecord(
@@ -162,13 +185,14 @@ public struct KernelTFP0Resolver: Sendable {
         let finalStore = try image.readUInt32(at: site + 12)
         guard isUnsigned64Store(finalStore), unsignedByteOffset(finalStore) == 8 else {
             throw PatchfinderError.invalidPatch(
-                id: "kernel.tfp0.dyld-info-slide",
+                id: Self.slideRecordID,
                 reason: "TASK_DYLD_INFO second result field is not a 64-bit +8 store"
             )
         }
         let valueRegister = finalStore & 0x1F
         let outputRegister = (finalStore >> 5) & 0x1F
-        guard outputRegister != 31,
+        guard valueRegister != 31,
+              outputRegister != 31,
               let siteAddress = layout.virtualAddress(forFileOffset: site),
               let page = ARM64.encodeADRP(
                 register: valueRegister,
@@ -187,7 +211,7 @@ public struct KernelTFP0Resolver: Sendable {
               )
         else {
             throw PatchfinderError.invalidPatch(
-                id: "kernel.tfp0.dyld-info-slide",
+                id: Self.slideRecordID,
                 reason: "cannot encode the TASK_DYLD_INFO slide transport"
             )
         }
@@ -208,7 +232,7 @@ public struct KernelTFP0Resolver: Sendable {
         }
 
         return PatchRecord(
-            id: "kernel.tfp0.dyld-info-slide",
+            id: Self.slideRecordID,
             component: "kernelcache",
             offset: site,
             originalBytes: original,
@@ -257,11 +281,15 @@ public struct KernelTFP0Resolver: Sendable {
         let page = try image.readUInt32(at: pageOffset)
         let load = try image.readUInt32(at: pageOffset + 4)
         let spill = try image.readUInt32(at: pageOffset + 8)
+        let pageRegister = page & 0x1F
+        let valueRegister = load & 0x1F
         guard page & 0x9F00_0000 == 0x9000_0000,
+              pageRegister != 31,
               isUnsigned64Load(load),
-              (load >> 5) & 0x1F == page & 0x1F,
+              valueRegister != 31,
+              (load >> 5) & 0x1F == pageRegister,
               isUnsigned64Store(spill),
-              spill & 0x1F == load & 0x1F,
+              spill & 0x1F == valueRegister,
               (spill >> 5) & 0x1F == 31,
               let pageAddress = layout.virtualAddress(forFileOffset: pageOffset)
         else {
@@ -276,7 +304,7 @@ public struct KernelTFP0Resolver: Sendable {
               })
         else {
             throw PatchfinderError.invalidPatch(
-                id: "kernel.tfp0.dyld-info-slide",
+                id: Self.slideRecordID,
                 reason: "vm_kernel_slide does not resolve to mapped data"
             )
         }
@@ -311,7 +339,7 @@ public struct KernelTFP0Resolver: Sendable {
               unsignedByteOffset(secondLoad) == unsignedByteOffset(firstLoad) + 8
         else {
             throw PatchfinderError.invalidPatch(
-                id: "kernel.tfp0.dyld-info-slide",
+                id: Self.slideRecordID,
                 reason: "unexpected TASK_DYLD_INFO result construction"
             )
         }
@@ -336,25 +364,5 @@ public struct KernelTFP0Resolver: Sendable {
             withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
         }
         return data
-    }
-
-    private static func patchPattern(
-        name: String,
-        words: [UInt32],
-        patchIndex: Int,
-        allowDataLayoutDrift: Bool = false
-    ) -> MaskedInstructionPattern {
-        let reference = MaskedInstructionPattern(
-            name: name,
-            referenceWords: words,
-            allowDataLayoutDrift: allowDataLayoutDrift
-        )
-        var masks = reference.masks
-        masks[patchIndex] = 0
-        return MaskedInstructionPattern(
-            name: name,
-            values: zip(words, masks).map { $0 & $1 },
-            masks: masks
-        )
     }
 }

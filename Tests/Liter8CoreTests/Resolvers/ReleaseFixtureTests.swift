@@ -39,6 +39,23 @@ final class ReleaseFixtureTests: XCTestCase {
         )
     }
 
+    private func assertTFP0Idempotence(
+        image: BinaryImage,
+        records: [PatchRecord],
+        build: String
+    ) throws {
+        let first = try GuardedPatchApplier.apply(records, to: image)
+        let patched = BinaryImage(data: first.data)
+        let secondRecords = try KernelTFP0Resolver.requiredRecords(in: patched)
+        XCTAssertEqual(secondRecords, records, build)
+        let second = try GuardedPatchApplier.apply(secondRecords, to: patched)
+        XCTAssertTrue(
+            second.dispositions.values.allSatisfy { $0 == .alreadyApplied },
+            build
+        )
+        XCTAssertEqual(second.data, first.data, build)
+    }
+
     /// fixture file, binary under `offsets/24A435/`, expected record count.
     private static let fixtures: [(String, String, Int)] = [
         ("ibss-n104-24A435.json", "iBSS.n104.RELEASE.bin", 2),
@@ -135,21 +152,31 @@ final class ReleaseFixtureTests: XCTestCase {
         let url = binary("kernelcache.release.iphone12b.bin", build: "24A446")
         let image = try BinaryImage(contentsOf: url)
         let required = try KernelTFP0Resolver.requiredRecords(in: image)
-        let first = try GuardedPatchApplier.apply(required, to: image)
-        let patched = BinaryImage(data: first.data)
-        let secondRecords = try KernelTFP0Resolver.requiredRecords(in: patched)
-        XCTAssertEqual(secondRecords, required)
-        let second = try GuardedPatchApplier.apply(secondRecords, to: patched)
-        XCTAssertTrue(second.dispositions.values.allSatisfy { $0 == .alreadyApplied })
-        XCTAssertEqual(second.data, first.data)
+        try assertTFP0Idempotence(image: image, records: required, build: "24A446")
     }
 
     func testTFP0ResolverCoversTwoSevenTwoBetasAndIsIdempotent() throws {
         let cases: [(build: String, offsets: [UInt64], slideReplacement: String)] = [
-            ("24B5084k", [0x32EB87C, 0x37FA368, 0x32ED1E4, 0x3335880], "88cbfeb008a540f9df0200f9"),
-            ("24B5089g", [0x32EF810, 0x37FEA40, 0x32F1178, 0x333981C], "68cbfeb008a540f9df0200f9"),
-            ("24B5099f", [0x3207830, 0x3716BA8, 0x3209198, 0x3251854], "88d1feb0089140f9df0200f9"),
-            ("24B5110a", [0x320B830, 0x371AE48, 0x320D198, 0x3255854], "68d1feb0089140f9df0200f9"),
+            (
+                "24B5084k",
+                [0x32EB87C, 0x37FA368, 0x32ED1E4, 0x3335880],
+                "88cbfeb008a540f9df0200f9"
+            ),
+            (
+                "24B5089g",
+                [0x32EF810, 0x37FEA40, 0x32F1178, 0x333981C],
+                "68cbfeb008a540f9df0200f9"
+            ),
+            (
+                "24B5099f",
+                [0x3207830, 0x3716BA8, 0x3209198, 0x3251854],
+                "88d1feb0089140f9df0200f9"
+            ),
+            (
+                "24B5110a",
+                [0x320B830, 0x371AE48, 0x320D198, 0x3255854],
+                "68d1feb0089140f9df0200f9"
+            ),
         ]
 
         for testCase in cases {
@@ -172,16 +199,11 @@ final class ReleaseFixtureTests: XCTestCase {
                 testCase.build
             )
 
-            let first = try GuardedPatchApplier.apply(records, to: image)
-            let patched = BinaryImage(data: first.data)
-            let secondRecords = try KernelTFP0Resolver.requiredRecords(in: patched)
-            XCTAssertEqual(secondRecords, records, testCase.build)
-            let second = try GuardedPatchApplier.apply(secondRecords, to: patched)
-            XCTAssertTrue(
-                second.dispositions.values.allSatisfy { $0 == .alreadyApplied },
-                testCase.build
+            try assertTFP0Idempotence(
+                image: image,
+                records: records,
+                build: testCase.build
             )
-            XCTAssertEqual(second.data, first.data, testCase.build)
         }
     }
 
