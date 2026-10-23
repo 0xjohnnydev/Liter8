@@ -497,7 +497,7 @@ enum KernelCredentialManagerSignatures {
         ]
     )
 
-    /// iOS 27.2 beta 4 `24B5110a`.
+    /// iOS 27.2 beta 4 `24B5110a` and RC `24B115`.
     ///
     /// Shape-identical to beta 3: `acm-probe` with `release24B5099fV1` against
     /// this kernelcache matches twenty-four entries at exactly one site, and
@@ -512,8 +512,10 @@ enum KernelCredentialManagerSignatures {
     /// entries between their neighbours match beta 3 exactly (one at 0x124 after
     /// `scheduleDblClickDeferredAck`; four at 0x230, 0x3a0, 0x4c8, 0x5f0 after
     /// `lockItem`, the first being `unlockItem`).
-    static let release24B5110aV1 = KernelCredentialManagerSignatureVariant(
-        id: "ios272b4-24B5110a-acm-v1",
+    /// Probing the RC reproduces the same twenty-four unique matches and the
+    /// same two neighbor-scored methods, so one signature family covers both.
+    static let late272V1 = KernelCredentialManagerSignatureVariant(
+        id: "ios272-late-acm-v1",
         functions: [
             // beta 4 file offset 0x2101b80
             .init("sepManagerMatchedThreadCallHandler", words: "d503237f d10103ff a9037bfd 9100c3fd f9404c00 f9400010 aa0003f1 f2f9b431 dac11a30 f84e8e09 aa1003e8 d0000030"),
@@ -577,7 +579,7 @@ enum KernelCredentialManagerSignatures {
         case release24B5084kV1.id: return release24B5084kV1
         case release24B5089gV1.id: return release24B5089gV1
         case release24B5099fV1.id: return release24B5099fV1
-        case release24B5110aV1.id: return release24B5110aV1
+        case late272V1.id: return late272V1
         default: return nil
         }
     }

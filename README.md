@@ -43,6 +43,7 @@ PRs welcome on any of these, especially SEP. The Pro and Pro Max are open too, i
 | iOS 27.2 beta 2 | `24B5089g` | run       | -            | -            |
 | iOS 27.2 beta 3 | `24B5099f` | run       | -            | -            |
 | iOS 27.2 beta 4 | `24B5110a` | run       | -            | -            |
+| iOS 27.2 RC     | `24B115`   | experimental | -         | -            |
 
 "Run" means i did an erase restore, booted it normally, then rebooted and it came back up. "Experimental" means unverified. It resolves and you can use it with `--experimental`, but nobody has confirmed it on that phone. If you own one and are willing to try, share what happens and i'll change the tag.
 
@@ -143,7 +144,7 @@ Take the SIM out before going through Setup on a fresh restore. Cellular data do
 
 `fw get-boot` builds TXM with its code-signing policy flags turned on (any signature, unrestricted local signing, relaxed profile trust, CS enforcement disabled, unrestricted task_for_pid) plus the patches C function hooks need. CoreTrust stays enforced. The boot manifest records it as `txmPlan: boot-permissive`.
 
-On iPhone 11 (`iPhone12,1` / `n104ap`) from iOS 27.0 RC through iOS 27.2 beta 4,
+On iPhone 11 (`iPhone12,1` / `n104ap`) from iOS 27.0 RC through iOS 27.2 RC,
 use `fw get-boot --tfp0` to add the four tfp0 kernel patches used by
 `libkrw0-tfp0`. It is off by default.
 

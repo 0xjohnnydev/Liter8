@@ -373,6 +373,29 @@ public enum DeviceWorkflowRegistry {
                 supportsTFP0KernelTaskPort: true
             )
         ),
+        // iOS 27.2 RC. The guards come from this build's root filesystem and
+        // every boot plan resolves on its own firmware. It stays experimental
+        // until an iPhone 11 restore and repeat boot complete.
+        DeviceWorkflowProfile(
+            id: "iphone12,1-n104ap-24B115",
+            productVersion: "27.2",
+            build: "24B115",
+            productType: "iPhone12,1",
+            deviceClass: "n104ap",
+            chipID: 0x8030,
+            boardID: 0x04,
+            extractedDirectoryName: "iPhone12,1_27.2_24B115_Restore",
+            validationState: .experimental,
+            launchdSHA256: "0776cff26027264644dbf7a36049e8bc9c10fa296a787d1c62f174ccccaf40d3",
+            launchdCacheSHA256: "a0e52d010a78e1c64193f23ac0cffb6874f9c47aac6ecf544e8ed8fde2145d01",
+            launchdCacheDaemonCount: 732,
+            setupControllerMethodCount: 64,
+            bootPlan: DeviceBootPlan(
+                normalIBSSAdditionalPlans: [.skipDisplayInitialization],
+                restoreIBSSAdditionalPlans: [.skipDisplayInitialization],
+                supportsTFP0KernelTaskPort: true
+            )
+        ),
         // iOS 27.0.1, device-validated on an iPhone 11: erase restore, SSHRD
         // provisioning, normal boot, repeat boot, Procursus finalization,
         // Dropbear, persona 99, icon token and PosterBoard repair all passed.

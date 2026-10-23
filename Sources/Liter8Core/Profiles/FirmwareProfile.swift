@@ -229,10 +229,24 @@ public enum KernelResolverProfileRegistry {
             component: "kernelcache.release.iphone12b",
             embeddedFingerprint: "xnu-13432.42.3~13/RELEASE_ARM64_T8030",
             resolverVariants: [
-                // Shape-identical to beta 3; see
-                // KernelCredentialManagerSignatures.release24B5110aV1.
+                // Shared with RC after probing all 26 method shapes.
                 "kernel-credential-manager": ResolverVariantProfile(
-                    signature: "ios272b4-24B5110a-acm-v1",
+                    signature: "ios272-late-acm-v1",
+                    payload: "acm-return-success-v1"
+                ),
+                KernelTFP0Resolver.variantKey: tfp0Variant,
+            ]
+        ),
+        KernelResolverProfile(
+            id: "ios272rc-24B115-n104ap",
+            productVersion: "27.2 RC",
+            builds: ["24B115"],
+            boards: ["n104ap"],
+            component: "kernelcache.release.iphone12b",
+            embeddedFingerprint: "xnu-13432.42.3~28/RELEASE_ARM64_T8030",
+            resolverVariants: [
+                "kernel-credential-manager": ResolverVariantProfile(
+                    signature: "ios272-late-acm-v1",
                     payload: "acm-return-success-v1"
                 ),
                 KernelTFP0Resolver.variantKey: tfp0Variant,
