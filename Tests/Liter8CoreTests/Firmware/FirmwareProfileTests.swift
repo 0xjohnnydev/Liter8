@@ -108,7 +108,7 @@ final class FirmwareProfileTests: XCTestCase {
         XCTAssertFalse(release.covers(build: "24A5390f"))
     }
 
-    func testTFP0SupportCoversIPhone11Through272Beta4() {
+    func testTFP0SupportCoversIPhone11FromRCThrough272Beta4() {
         let resolverBuilds = KernelResolverProfileRegistry.profiles
             .filter { $0.variants(for: KernelTFP0Resolver.variantKey) != nil }
             .flatMap(\.builds)
